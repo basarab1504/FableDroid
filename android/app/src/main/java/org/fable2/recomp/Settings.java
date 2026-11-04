@@ -66,6 +66,14 @@ final class Settings {
     }
     void setDriver(String id) { prefs.edit().putString("gpu_driver", id).apply(); }
     boolean logFps() { return prefs.getBoolean("log_fps", false); }
+    // Ported from the FIFA Street Android port (docs/FIFA_PERF_PORT.md). The first three were
+    // measured there on an Exynos/Xclipse phone and default on; the resolve shortcut is
+    // unverified and defaults off.
+    boolean uploadCache() { return prefs.getBoolean("upload_cache", true); }
+    boolean separatePresentQueue() { return prefs.getBoolean("separate_present_queue", true); }
+    boolean fastCores() { return prefs.getBoolean("fast_cores", true); }
+    boolean resolveShortcut() { return prefs.getBoolean("resolve_shortcut", false); }
+    boolean diagnosticLogs() { return prefs.getBoolean("diagnostic_logs", false); }
     int touchMode() { return prefs.getInt("touch_mode", TOUCH_AUTO); }
     float touchOpacity() { return prefs.getFloat("touch_opacity", 0.6f); }
     float touchScale() { return prefs.getFloat("touch_scale", 1f); }
@@ -115,6 +123,34 @@ final class Settings {
         managed.put("spirv_alpha_to_coverage_1x_bayer", fineFoliage() ? "true" : "false");
         managed.put("vulkan_android_custom_driver", "\"" + driver() + "\"");
         managed.put("log_guest_fps_seconds", logFps() ? "5" : "0");
+
+        // FIFA port: CPU upload cache (skips re-uploading unchanged pages), batched watch rearm,
+        // unwatched hot pages and cache filled from guest memory.
+        String cache = uploadCache() ? "true" : "false";
+        managed.put("vulkan_cache_cpu_uploads", cache);
+        managed.put("shared_memory_unwatch_hot_pages", cache);
+        managed.put("vulkan_batch_upload_cache_rearm", "true");
+        managed.put("vulkan_upload_cache_from_guest", "true");
+        managed.put("vulkan_separate_present_queue", separatePresentQueue() ? "true" : "false");
+        String cores = fastCores() ? "true" : "false";
+        managed.put("android_worker_big_cores", cores);
+        managed.put("android_audio_big_cores", cores);
+        managed.put("android_worker_adpf", cores);
+        managed.put("vulkan_resolve_texture_shortcut", resolveShortcut() ? "true" : "false");
+
+        // Diagnostic logging: the FIFA port's log set plus this project's GPUSTAT/GPUTIME
+        // (log_gpu_diagnostics needs log_guest_fps_seconds). All off in normal play.
+        boolean diag = diagnosticLogs();
+        String d = diag ? "true" : "false";
+        if (diag) managed.put("log_guest_fps_seconds", "5");
+        managed.put("log_gpu_diagnostics", d);
+        managed.put("log_frame_stats", d);
+        managed.put("log_late_frames", d);
+        managed.put("log_thread_cpu", d);
+        managed.put("log_thermal", d);
+        managed.put("log_present_paints", d);
+        managed.put("log_audio_output", d);
+        managed.put("log_resolve_texture_loads", d);
 
         File config = new File(storage, "fable_2.toml");
         List<String> lines = new ArrayList<>();

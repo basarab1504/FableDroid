@@ -224,6 +224,7 @@ custom driver loading, and Android platform support).
 ```sh
 git submodule update --init --recursive
 git -C thirdparty/rexglue-sdk apply ../rexglue-sdk-android.patch
+git -C thirdparty/rexglue-sdk apply ../rexglue-sdk-perf-port.patch
 ```
 
 Build the host code generator (runs on your machine) and the Android runtime:

@@ -171,6 +171,25 @@ public final class LauncherActivity extends Activity {
             Ui.toggle(this, settings.lowLatency(), on -> settings.put("low_latency", on))));
         column.addView(graphics);
 
+        LinearLayout performance = Ui.card(this);
+        performance.addView(Ui.title(this, "Performance"));
+        performance.addView(Ui.row(this, "CPU upload cache",
+            "Skips re-uploading guest memory pages that did not change and stops write-protecting pages the game rewrites every frame. Less CPU time in the GPU thread.",
+            Ui.toggle(this, settings.uploadCache(), on -> settings.put("upload_cache", on))));
+        performance.addView(Ui.row(this, "Separate present queue",
+            "Presents on its own Vulkan queue so showing a frame never blocks the GPU thread's submissions.",
+            Ui.toggle(this, settings.separatePresentQueue(), on -> settings.put("separate_present_queue", on))));
+        performance.addView(Ui.row(this, "Fast cores for GPU and audio threads",
+            "Keeps the GPU command and audio threads off the slowest CPU cluster and reports the GPU thread's work to Android's performance hints.",
+            Ui.toggle(this, settings.fastCores(), on -> settings.put("fast_cores", on))));
+        performance.addView(Ui.row(this, "Resolve-to-texture shortcut (experimental)",
+            "Copies a just-rendered RGBA8 image straight into the texture that reads it back, instead of decoding it from emulated memory again. Unverified: turn off if you see wrong or flickering images.",
+            Ui.toggle(this, settings.resolveShortcut(), on -> settings.put("resolve_shortcut", on))));
+        performance.addView(Ui.row(this, "Diagnostic logging",
+            "Writes frame timing, late frames, thread CPU, temperature, GPU pass timing and resolve statistics to the log every 5 seconds, plus battery.log. Costs a little performance; leave off for normal play.",
+            Ui.toggle(this, settings.diagnosticLogs(), on -> settings.put("diagnostic_logs", on))));
+        column.addView(performance, Ui.fill(this, 16));
+
         LinearLayout controls = Ui.card(this);
         controls.addView(Ui.title(this, "Controls"));
         controls.addView(Ui.row(this, "Touch controls",

@@ -1,7 +1,13 @@
 package org.fable2.recomp;
 
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.input.InputManager;
+import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.view.InputDevice;
 import android.view.View;
 import java.util.Map;
@@ -9,11 +15,19 @@ import android.view.ViewGroup;
 import android.view.KeyEvent;
 import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLControllerManager;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 public final class GameActivity extends SDLActivity {
     private TouchControls touchControls;
     private Map<Integer, Integer> buttonMap;
     private int touchMode;
+    private final Handler batteryHandler = new Handler(Looper.getMainLooper());
+    private boolean batteryLogging;
     private final InputManager.InputDeviceListener deviceListener = new InputManager.InputDeviceListener() {
         @Override public void onInputDeviceAdded(int id) { updateTouchVisibility(); }
         @Override public void onInputDeviceRemoved(int id) { updateTouchVisibility(); }
@@ -33,8 +47,11 @@ public final class GameActivity extends SDLActivity {
             getSystemService(InputManager.class).registerInputDeviceListener(deviceListener, null);
             updateTouchVisibility();
         }
+        batteryLogging = settings.diagnosticLogs();
+        if (batteryLogging) batteryHandler.post(batteryLogger);
     }
     @Override protected void onDestroy() {
+        batteryHandler.removeCallbacks(batteryLogger);
         if (touchControls != null) getSystemService(InputManager.class).unregisterInputDeviceListener(deviceListener);
         super.onDestroy();
     }
@@ -42,6 +59,39 @@ public final class GameActivity extends SDLActivity {
         if (touchControls != null) touchControls.releaseAll();
         super.onPause();
     }
+
+    // Diagnostic logging: apps cannot read most CPU/GPU thermal zones, but the battery
+    // temperature (a proxy for the device body), power saver and thermal status are public.
+    // Every 15 s into battery.log next to the game logs; compare by timestamp.
+    private final Runnable batteryLogger = new Runnable() {
+        @Override public void run() {
+            Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+            StringBuilder line = new StringBuilder("[battery]");
+            if (battery != null) {
+                int temperature = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
+                int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+                if (temperature != Integer.MIN_VALUE)
+                    line.append(" temp_C=").append(temperature / 10).append('.').append(Math.abs(temperature % 10));
+                if (level >= 0 && scale > 0) line.append(" level=").append(level * 100 / scale).append('%');
+                line.append(" charging=").append(plugged != 0);
+            }
+            if (power != null) {
+                line.append(" power_save=").append(power.isPowerSaveMode());
+                line.append(" thermal_status=").append(power.getCurrentThermalStatus());
+            }
+            String stamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+            File dir = getExternalFilesDir(null);
+            if (dir != null) {
+                try (FileOutputStream out = new FileOutputStream(new File(dir, "battery.log"), true)) {
+                    out.write(("[" + stamp + "] " + line + "\n").getBytes(StandardCharsets.UTF_8));
+                } catch (java.io.IOException ignored) {}
+            }
+            if (batteryLogging) batteryHandler.postDelayed(this, 15000);
+        }
+    };
 
     // Auto: touch controls only without a physical gamepad. Handhelds with
     // built-in controls (AYN Thor, Retroid) report theirs as a gamepad.
