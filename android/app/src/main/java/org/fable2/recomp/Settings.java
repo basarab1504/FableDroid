@@ -53,6 +53,10 @@ final class Settings {
     Settings(Context context) { prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE); }
 
     int resolutionScale() { return prefs.getInt("resolution_scale", 1); }
+    // Main render height presets below the native 720 lines (0 = native). Applied in the
+    // RenderConfigInit hotfunc; width follows the game's aspect (1120x720 -> 840x540, 744x480, 560x360).
+    static final int[] RENDER_HEIGHTS = { 0, 540, 480, 360 };
+    int renderHeight() { return prefs.getInt("render_height", 0); }
     boolean msaa() { return prefs.getBoolean("msaa", false); }
     boolean tripleBuffering() { return prefs.getBoolean("triple_buffering", false); }
     boolean skipIntros() { return prefs.getBoolean("skip_intros", false); }
@@ -115,6 +119,7 @@ final class Settings {
         int scale = resolutionScale();
         managed.put("draw_resolution_scale_x", Integer.toString(scale));
         managed.put("draw_resolution_scale_y", Integer.toString(scale));
+        managed.put("fable2_render_height", Integer.toString(renderHeight()));
         managed.put("fable2_disable_msaa", msaa() ? "false" : "true");
         managed.put("vulkan_max_frames_in_flight", tripleBuffering() ? "3" : "2");
         managed.put("fable2_skip_intros", skipIntros() ? "true" : "false");

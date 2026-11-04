@@ -154,6 +154,14 @@ public final class LauncherActivity extends Activity {
         graphics.addView(Ui.row(this, "Resolution scale",
             "1x is the Xbox 360's native 1120×720. 2x and 3x render more pixels and need a much faster GPU.",
             Ui.segmented(this, new String[] { "1x", "2x", "3x" }, scale - 1, i -> settings.put("resolution_scale", i + 1))));
+        int heightIndex = 0;
+        for (int i = 0; i < Settings.RENDER_HEIGHTS.length; ++i)
+            if (Settings.RENDER_HEIGHTS[i] == settings.renderHeight()) heightIndex = i;
+        graphics.addView(Ui.row(this, "Render resolution",
+            "Renders the game below its native 720 lines and scales it to the screen: 540p (840×540), 480p (744×480), 360p (560×360). "
+            + "Fewer pixels for the GPU, blurrier image. Experimental: if the picture looks cropped or misplaced, go back to 720p.",
+            Ui.segmented(this, new String[] { "720p", "540p", "480p", "360p" }, heightIndex,
+                i -> settings.put("render_height", Settings.RENDER_HEIGHTS[i]))));
         graphics.addView(Ui.row(this, "Anti-aliasing (MSAA)",
             "Smoother edges at a large performance cost. Off is recommended on handhelds.",
             Ui.toggle(this, settings.msaa(), on -> settings.put("msaa", on))));

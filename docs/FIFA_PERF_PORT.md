@@ -68,3 +68,15 @@ on) has battery temperature, charge, power saver and thermal status.
    change per run.
 3. Resolve shortcut on, short session: check the image (bloom, shadows, menus) and the
    `Resolve texture shortcut` line. If images look wrong, turn it off.
+
+## Render resolution presets (720p / 540p / 480p / 360p)
+
+Launcher: Graphics → **Render resolution** (default 720p). Writes `fable2_render_height`
+(0 = native). The `RenderConfigInit_8238DE58` hotfunc overwrites the main render size the game
+stores (offsets 148/152, next to the MSAA mode): 1120×720 → 840×540, 744×480 or 560×360; in the
+game's 960-wide case → 720×540, 640×480, 480×360. The game's own path scales that to the
+1280×720 front buffer. Unlike FIFA's 480p/360p this changes the guest render size, not only the
+output. The log line `Fable II render size ... (fable2_render_height)` confirms it applied.
+
+**Unverified on device.** Check: whole picture visible (no crop or quarter-screen image), HUD and
+menus, bloom/shadows, and compare GPU time per frame against 720p from a cold start.
