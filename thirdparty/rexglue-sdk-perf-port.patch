@@ -513,10 +513,10 @@ index 0000000..df1b22d
 +
 +}  // namespace rex::graphics
 diff --git a/include/rex/thread/mutex.h b/include/rex/thread/mutex.h
-index 6e5755a..3163493 100644
+index 6e5755a..c5425ba 100644
 --- a/include/rex/thread/mutex.h
 +++ b/include/rex/thread/mutex.h
-@@ -11,10 +11,28 @@
+@@ -11,10 +11,36 @@
  
  #pragma once
  
@@ -542,10 +542,18 @@ index 6e5755a..3163493 100644
 +// Returns and clears the contention records gathered since the last call.
 +std::vector<GlobalLockContention> TakeGlobalLockContention();
 +
++// guest_global_lock (cvar, default true): whether the recompiled guest's mfmsr/mtmsrd
++// interrupt-disable sections (REX_ENTER/LEAVE/CHECK_GLOBAL_LOCK) take the global critical
++// region. Every such section wraps a single lwarx/stwcx. pair, and stwcx. is a real
++// compare-exchange, so with false the sections rely on the CAS alone (like XenonRecomp's
++// skip_msr and current Xenia). Set once in Runtime::Setup before any guest code runs;
++// never changed afterwards (a section entered with one value must leave with the same).
++extern bool guest_global_lock;
++
  // The global critical region mutex singleton.
  // This must guard any operation that may suspend threads or be sensitive to
  // being suspended such as global table locks and such.
-@@ -62,11 +80,19 @@ class global_critical_region {
+@@ -62,11 +88,19 @@ class global_critical_region {
    // to keep an instance of global_critical_region near the members requiring
    // it to keep things readable.
    static std::unique_lock<std::recursive_mutex> AcquireDirect() {
@@ -641,6 +649,52 @@ index 0000000..d156291
 +  return graphics_family == present_family ? reserved_index : 0;
 +}
 +} // namespace rex::ui::vulkan
+diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
+index 68274d2..4623217 100644
+--- a/resources/templates/codegen/pch_h.inja
++++ b/resources/templates/codegen/pch_h.inja
+@@ -315,21 +315,28 @@ inline std::atomic<i32>& ppc_global_lock_count_() {
+   return count;
+ }
+ 
+-#define REX_CHECK_GLOBAL_LOCK()                                        \
+-  ([&]() -> u64 {                                                      \
+-    auto lock_ = rex::thread::global_critical_region::AcquireDirect(); \
+-    return ppc_global_lock_count_().load() ? 0 : 0x8000;               \
++// rex::thread::guest_global_lock == false: the sections take no lock (the stwcx. inside is
++// an atomic compare-exchange) and mfmsr reads "interrupts enabled".
++#define REX_CHECK_GLOBAL_LOCK()                                          \
++  ([&]() -> u64 {                                                        \
++    if (!rex::thread::guest_global_lock) return 0x8000;                  \
++    auto lock_ = rex::thread::global_critical_region::AcquireDirect();   \
++    return ppc_global_lock_count_().load() ? 0 : 0x8000;                 \
+   }())
+ 
+-#define REX_ENTER_GLOBAL_LOCK()                          \
+-  do {                                                   \
+-    rex::thread::global_critical_region::mutex().lock(); \
+-    ppc_global_lock_count_().fetch_add(1);               \
++#define REX_ENTER_GLOBAL_LOCK()                              \
++  do {                                                       \
++    if (rex::thread::guest_global_lock) {                    \
++      rex::thread::global_critical_region::mutex().lock();   \
++      ppc_global_lock_count_().fetch_add(1);                 \
++    }                                                        \
+   } while (0)
+ 
+-#define REX_LEAVE_GLOBAL_LOCK()                                                           \
+-  do {                                                                                    \
+-    auto old_count_ = ppc_global_lock_count_().fetch_sub(1);                              \
+-    assert(old_count_ >= 1 && "LeaveGlobalLock called without matching EnterGlobalLock"); \
+-    rex::thread::global_critical_region::mutex().unlock();                                \
++#define REX_LEAVE_GLOBAL_LOCK()                                                             \
++  do {                                                                                      \
++    if (rex::thread::guest_global_lock) {                                                   \
++      auto old_count_ = ppc_global_lock_count_().fetch_sub(1);                              \
++      assert(old_count_ >= 1 && "LeaveGlobalLock called without matching EnterGlobalLock"); \
++      rex::thread::global_critical_region::mutex().unlock();                                \
++    }                                                                                       \
+   } while (0)
 diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
 index 7a711a8..3e90950 100644
 --- a/src/audio/audio_system.cpp
@@ -739,10 +793,10 @@ index edaa98d..87a3c61 100644
  }
  
 diff --git a/src/core/mutex.cpp b/src/core/mutex.cpp
-index d639924..5069c80 100644
+index d639924..3104f33 100644
 --- a/src/core/mutex.cpp
 +++ b/src/core/mutex.cpp
-@@ -11,8 +11,84 @@
+@@ -11,8 +11,85 @@
  
  #include <rex/thread/mutex.h>
  
@@ -758,13 +812,14 @@ index d639924..5069c80 100644
  namespace rex::thread {
  
 +std::atomic<bool> global_lock_profiling{false};
++bool guest_global_lock = true;
 +
 +namespace {
 +std::atomic<int> global_lock_owner_tid{0};
 +std::atomic<uintptr_t> global_lock_owner_site{0};
 +std::mutex global_lock_stats_mutex;
 +std::vector<GlobalLockContention> global_lock_stats;
-+constexpr size_t kMaxGlobalLockRecords = 256;
++constexpr size_t kMaxGlobalLockRecords = 2048;
 +
 +int CurrentTid() {
 +  thread_local int tid = 0;
@@ -2758,6 +2813,34 @@ index 6a7567b..573259f 100644
      if (access_violation_callback_) {
        return access_violation_callback_(std::move(lock), access_violation_callback_context_,
                                          fault_host_address, is_write);
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..4cb0cae 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -33,6 +33,10 @@ REXCVAR_DEFINE_STRING(user_data_root, "", "Runtime", "Override user data path");
+ REXCVAR_DEFINE_STRING(update_data_root, "", "Runtime", "Override update data path");
+ REXCVAR_DEFINE_STRING(cache_root, "", "Runtime", "Override shader cache path");
+ REXCVAR_DEFINE_STRING(metadata_root, "", "Runtime", "Override metadata path");
++REXCVAR_DEFINE_BOOL(guest_global_lock, true, "Runtime",
++                    "Guest interrupt-disable sections (mfmsr/mtmsrd around lwarx/stwcx.) take the "
++                    "global critical region. false: rely on the atomic stwcx. alone.")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ namespace rex {
+ 
+@@ -95,6 +99,12 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+   }
+   instance_ = this;
+ 
++  // Before any guest code runs; fixed for the whole process (see rex/thread/mutex.h).
++  rex::thread::guest_global_lock = REXCVAR_GET(guest_global_lock);
++  if (!rex::thread::guest_global_lock) {
++    REXSYS_INFO("guest_global_lock = false: guest MSR sections run without the global lock");
++  }
++
+   auto fail = [this](X_STATUS status, std::string_view reason) {
+     REXSYS_ERROR("Runtime::Setup failed: {}", reason);
+     Shutdown();
 diff --git a/src/ui/imgui_drawer.cpp b/src/ui/imgui_drawer.cpp
 index 82173c8..6d8468b 100644
 --- a/src/ui/imgui_drawer.cpp

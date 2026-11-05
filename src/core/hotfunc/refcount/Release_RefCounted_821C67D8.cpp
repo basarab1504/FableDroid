@@ -125,7 +125,7 @@ extern "C" void Release_RefCounted_821C67D8(PPCContext& __restrict ctx, uint8_t*
     // a do-loop).
     u32* refcount = reinterpret_cast<u32*>(gaddr(obj + 12, base)); // addi r11,r11,12
     do {
-      hotfunc_gcr_mutex().lock(); ppc_global_lock_count_().fetch_add(1);
+      if (rex::thread::guest_global_lock) { hotfunc_gcr_mutex().lock(); ppc_global_lock_count_().fetch_add(1); }  // see rex/thread/mutex.h
       ctx.reserved.u32 = *refcount;          // lwarx r10,0,r11
       ctx.r10.u64 = __builtin_bswap32(ctx.reserved.u32);
       ctx.r10.s64 -= 1;                      // addi r10,r10,-1
@@ -134,8 +134,10 @@ extern "C" void Release_RefCounted_821C67D8(PPCContext& __restrict ctx, uint8_t*
       ctx.cr0.eq = __sync_bool_compare_and_swap(
           refcount, ctx.reserved.s32, __builtin_bswap32(ctx.r10.s32));
       ctx.cr0.so = ctx.xer.so;
-      { auto old_ = ppc_global_lock_count_().fetch_sub(1); assert(old_ >= 1); }
-      hotfunc_gcr_mutex().unlock();
+      if (rex::thread::guest_global_lock) {
+        { auto old_ = ppc_global_lock_count_().fetch_sub(1); assert(old_ >= 1); }
+        hotfunc_gcr_mutex().unlock();
+      }
     } while (!ctx.cr0.eq);                   // bne 0x821c6800
 
     // mr r11,r10; cmpwi cr6,r11,0: this is the last reference?

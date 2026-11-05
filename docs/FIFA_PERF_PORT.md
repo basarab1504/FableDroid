@@ -106,3 +106,29 @@ Thermal status differed between runs (0 → 1–3), so the later minutes are not
   spends that time (`Thread samples … GPU Commands`).
 - Resolve-to-texture shortcut (run C only) hit for the first time in Fable (hits=301,
   misses=1340 by the end); image check pending.
+
+## Guest global lock (`guest_global_lock`, launcher: *Lock-free guest atomics*)
+
+Run r10 (`log_global_lock`) showed guest threads queueing on the global critical region at
+guest atomics: GameThread @ SpinLock_Acquire ~712 ms, XThreads @ AddAtomic / ProcessGlobalCounter
+310–580 ms per 18 s, partly behind the GPU thread holding the lock in
+`PhysicalHeap::EnableAccessCallbacks`.
+
+- The codegen turns the guest's `mfmsr` / `mtmsrd r13` interrupt-disable sequence into
+  `REX_CHECK/ENTER/LEAVE_GLOBAL_LOCK`. All 8406 such sections in Fable II wrap a single
+  `lwarx` … `stwcx.` pair (2–4 instructions, checked by script over `generated/default`), and
+  `stwcx.` is emitted as `compare_exchange_strong`, so the lock adds no atomicity.
+- `fable_2_manifest.toml` already asks for `skip_msr = true` (and `skip_lr`, `*_as_local`, the
+  same block as UnleashedRecomp's `SWA.toml`), but the block sits after the last
+  `[[entrypoint.midasm_hook]]` header, so TOML puts it inside that hook table and the codegen,
+  which reads the root table, never sees it. The generated code confirms it (`ctx.lr = …`
+  stores and `REX_ENTER_GLOBAL_LOCK` are emitted). Left unchanged for now.
+- References: UnleashedRecomp builds with `skip_msr = true` (no lock at all); current Xenia
+  Canary's `mtmsrd` only stores `ctx.msr` and takes no lock.
+- `guest_global_lock` (default true, restart): false makes the three macros no-ops (`mfmsr`
+  reads 0x8000). It is copied once in `Runtime::Setup` before guest code runs. The hand-tuned
+  hotfuncs that take the same mutex follow it; `ConstructRefCounted` then increments the
+  live-object counter at 0x83496EB8 with a CAS instead of a plain store, because its other
+  writer (generated `DestructRefCounted`) is no longer serialised by the lock.
+- Host code (`global_critical_region::Acquire`, interrupt dispatch, GPU access callbacks) is
+  unaffected.

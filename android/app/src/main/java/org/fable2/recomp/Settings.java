@@ -80,6 +80,7 @@ final class Settings {
     boolean fastCores() { return prefs.getBoolean("fast_cores", true); }
     boolean signalWaits() { return prefs.getBoolean("signal_waits", true); }
     boolean resolveShortcut() { return prefs.getBoolean("resolve_shortcut", false); }
+    boolean lockFreeAtomics() { return prefs.getBoolean("lock_free_atomics", false); }
     boolean threadSamples() { return prefs.getBoolean("thread_samples", false); }
     boolean diagnosticLogs() { return prefs.getBoolean("diagnostic_logs", false); }
     int touchMode() { return prefs.getInt("touch_mode", TOUCH_AUTO); }
@@ -147,6 +148,7 @@ final class Settings {
         managed.put("android_worker_adpf", cores);
         managed.put("posix_wait_multiple_events", signalWaits() ? "true" : "false");
         managed.put("vulkan_resolve_texture_shortcut", resolveShortcut() ? "true" : "false");
+        managed.put("guest_global_lock", lockFreeAtomics() ? "false" : "true");
 
         // Diagnostic logging: the FIFA port's log set plus this project's GPUSTAT/GPUTIME
         // (log_gpu_diagnostics needs log_guest_fps_seconds). All off in normal play.

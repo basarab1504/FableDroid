@@ -195,6 +195,9 @@ public final class LauncherActivity extends Activity {
         performance.addView(Ui.row(this, "Resolve-to-texture shortcut (experimental)",
             "Copies a just-rendered RGBA8 image straight into the texture that reads it back, instead of decoding it from emulated memory again. Unverified: turn off if you see wrong or flickering images.",
             Ui.toggle(this, settings.resolveShortcut(), on -> settings.put("resolve_shortcut", on))));
+        performance.addView(Ui.row(this, "Lock-free guest atomics (experimental)",
+            "The game's atomic operations rely on the CPU's compare-and-swap alone instead of also queueing all threads on one global lock. Turn off if the game hangs or behaves oddly.",
+            Ui.toggle(this, settings.lockFreeAtomics(), on -> settings.put("lock_free_atomics", on))));
         performance.addView(Ui.row(this, "Diagnostic logging",
             "Writes frame timing, late frames, thread CPU, temperature, GPU pass timing and resolve statistics to the log every 5 seconds, plus battery.log. Costs a little performance; leave off for normal play.",
             Ui.toggle(this, settings.diagnosticLogs(), on -> settings.put("diagnostic_logs", on))));

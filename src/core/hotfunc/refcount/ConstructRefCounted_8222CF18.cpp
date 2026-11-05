@@ -138,11 +138,22 @@ extern "C" void ConstructRefCounted_8222CF18(PPCContext& __restrict ctx, uint8_t
   // dropped - unobservable) and note 2 (lwarx/stwcx retry reduced to a plain
   // RMW, safe because construct+destruct are the only writers and both hold
   // this same lock).
-  hotfunc_gcr_mutex().lock();
-  ppc_global_lock_count_().fetch_add(1);
-  gstore32(kLiveObjectCountAddr, base, gload32(kLiveObjectCountAddr, base) + 1);
-  { auto old_ = ppc_global_lock_count_().fetch_sub(1); assert(old_ >= 1); }
-  hotfunc_gcr_mutex().unlock();
+  if (rex::thread::guest_global_lock) {
+    hotfunc_gcr_mutex().lock();
+    ppc_global_lock_count_().fetch_add(1);
+    gstore32(kLiveObjectCountAddr, base, gload32(kLiveObjectCountAddr, base) + 1);
+    { auto old_ = ppc_global_lock_count_().fetch_sub(1); assert(old_ >= 1); }
+    hotfunc_gcr_mutex().unlock();
+  } else {
+    // guest_global_lock off: the other writer (DestructRefCounted, generated code) no
+    // longer holds the lock, only its stwcx. compare-exchange, so increment atomically.
+    u32* counter = reinterpret_cast<u32*>(gaddr(kLiveObjectCountAddr, base));
+    u32 old_be = __atomic_load_n(counter, __ATOMIC_RELAXED);
+    while (!__atomic_compare_exchange_n(counter, &old_be,
+                                        __builtin_bswap32(__builtin_bswap32(old_be) + 1),
+                                        /*weak=*/true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+    }
+  }
   // stwcx. success (always, under the lock): cr0 = {0, 0, 1, xer.so}.
   ctx.cr0.lt = 0;
   ctx.cr0.gt = 0;
