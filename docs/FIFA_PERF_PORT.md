@@ -82,3 +82,27 @@ output. The log line `Fable II render size ... (fable2_render_height)` confirms 
 
 **Unverified on device.** Check: whole picture visible (no crop or quarter-screen image), HUD and
 menus, bloom/shadows, and compare GPU time per frame against 720p from a cold start.
+
+## First device results (SM-A566B, Exynos 1580 / Xclipse 540, system driver)
+
+Same save and spot, 480p preset, power saver on (not changed between runs), 2–3 minutes each.
+Thermal status differed between runs (0 → 1–3), so the later minutes are not comparable.
+
+| Run | Low latency | FIFA-port options | Guest FPS (first 90 s / rest) | GPU worker idle waiting for guest |
+|---|---|---|---|---|
+| A | on | on | 5–10 | 40–95% |
+| B | off | off | 25.6 / 17.7 | 0–5% |
+| C | off | on | 21.3 / 19.7 | 0–5% |
+
+- **Low latency (`guest_max_frames_ahead = 1`) caused the 7 FPS.** In run A the guest waited in
+  `VdSwap` for about 98 ms per frame on average (`Late frame … guest_wait`), i.e. the swap-pacing
+  wait ran into its 100 ms timeout almost every frame while the CP sat idle with an empty ring.
+  The launcher now defaults it to off. Why the CP does not catch up within the wait on this
+  device is not known yet.
+- **FIFA-port options: no measurable effect either way** (B vs C, within thermal noise).
+  `posix_wait_multiple_events` stayed on in all three runs.
+- **Next limit: the GPU command thread**, about 47–50 ms of thread CPU per guest frame and almost
+  never idle. The launcher's *Thread sampling* option (with diagnostic logging) logs where it
+  spends that time (`Thread samples … GPU Commands`).
+- Resolve-to-texture shortcut (run C only) hit for the first time in Fable (hits=301,
+  misses=1340 by the end); image check pending.

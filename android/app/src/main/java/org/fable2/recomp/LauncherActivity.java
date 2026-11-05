@@ -158,8 +158,7 @@ public final class LauncherActivity extends Activity {
         for (int i = 0; i < Settings.RENDER_HEIGHTS.length; ++i)
             if (Settings.RENDER_HEIGHTS[i] == settings.renderHeight()) heightIndex = i;
         graphics.addView(Ui.row(this, "Render resolution",
-            "Renders the game below its native 720 lines and scales it to the screen: 540p (832×544), 480p (736×480), 360p (576×368). "
-            + "Fewer pixels for the GPU, blurrier image. Experimental: if the picture looks cropped or misplaced, go back to 720p.",
+            "Renders below the native 720p and scales up: faster on the GPU, blurrier image.",
             Ui.segmented(this, new String[] { "720p", "540p", "480p", "360p" }, heightIndex,
                 i -> settings.put("render_height", Settings.RENDER_HEIGHTS[i]))));
         graphics.addView(Ui.row(this, "Anti-aliasing (MSAA)",
@@ -175,7 +174,7 @@ public final class LauncherActivity extends Activity {
             "Allows one more queued frame. May add input latency; leave off unless it improves your experience.",
             Ui.toggle(this, settings.tripleBuffering(), on -> settings.put("triple_buffering", on))));
         graphics.addView(Ui.row(this, "Low latency mode",
-            "Stops the game queuing frames ahead of the GPU: about 15 ms less input lag. With the current renderer it costs no measurable frame rate. Recommended.",
+            "Stops the game queuing frames ahead of the GPU for less input lag. On some phones (measured on an Exynos/Xclipse one) it cuts the frame rate to a third; off by default.",
             Ui.toggle(this, settings.lowLatency(), on -> settings.put("low_latency", on))));
         column.addView(graphics);
 
@@ -199,6 +198,9 @@ public final class LauncherActivity extends Activity {
         performance.addView(Ui.row(this, "Diagnostic logging",
             "Writes frame timing, late frames, thread CPU, temperature, GPU pass timing and resolve statistics to the log every 5 seconds, plus battery.log. Costs a little performance; leave off for normal play.",
             Ui.toggle(this, settings.diagnosticLogs(), on -> settings.put("diagnostic_logs", on))));
+        performance.addView(Ui.row(this, "Thread sampling",
+            "With diagnostic logging: records where the busiest thread and the GPU command thread spend their time. Makes the log much larger.",
+            Ui.toggle(this, settings.threadSamples(), on -> settings.put("thread_samples", on))));
         column.addView(performance, Ui.fill(this, 16));
 
         LinearLayout controls = Ui.card(this);

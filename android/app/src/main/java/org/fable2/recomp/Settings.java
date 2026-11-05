@@ -60,7 +60,9 @@ final class Settings {
     boolean msaa() { return prefs.getBoolean("msaa", false); }
     boolean tripleBuffering() { return prefs.getBoolean("triple_buffering", false); }
     boolean skipIntros() { return prefs.getBoolean("skip_intros", false); }
-    boolean lowLatency() { return prefs.getBoolean("low_latency", true); }
+    // Off by default: on an Exynos/Xclipse phone it made VdSwap wait out its 100 ms timeout
+    // almost every frame (about 7 FPS instead of 20-30; see docs/FIFA_PERF_PORT.md).
+    boolean lowLatency() { return prefs.getBoolean("low_latency", false); }
     boolean fxaa() { return prefs.getBoolean("fxaa", true); }
     boolean fineFoliage() { return prefs.getBoolean("fine_foliage", true); }
     String driver() {
@@ -78,6 +80,7 @@ final class Settings {
     boolean fastCores() { return prefs.getBoolean("fast_cores", true); }
     boolean signalWaits() { return prefs.getBoolean("signal_waits", true); }
     boolean resolveShortcut() { return prefs.getBoolean("resolve_shortcut", false); }
+    boolean threadSamples() { return prefs.getBoolean("thread_samples", false); }
     boolean diagnosticLogs() { return prefs.getBoolean("diagnostic_logs", false); }
     int touchMode() { return prefs.getInt("touch_mode", TOUCH_AUTO); }
     float touchOpacity() { return prefs.getFloat("touch_opacity", 0.6f); }
@@ -158,6 +161,12 @@ final class Settings {
         managed.put("log_present_paints", d);
         managed.put("log_audio_output", d);
         managed.put("log_resolve_texture_loads", d);
+        // Thread sampler (needs log_thread_cpu): ~200 pc/lr samples per interval of the busiest
+        // thread and of the GPU command thread, every pc logged for offline symbolization.
+        String samples = diag && threadSamples() ? "true" : "false";
+        managed.put("log_thread_samples", samples);
+        managed.put("log_thread_samples_all", samples);
+        managed.put("log_thread_samples_match", "\"GPU Commands\"");
 
         File config = new File(storage, "fable_2.toml");
         List<String> lines = new ArrayList<>();
