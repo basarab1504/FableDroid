@@ -199,7 +199,7 @@ public final class LauncherActivity extends Activity {
             "Writes frame timing, late frames, thread CPU, temperature, GPU pass timing and resolve statistics to the log every 5 seconds, plus battery.log. Costs a little performance; leave off for normal play.",
             Ui.toggle(this, settings.diagnosticLogs(), on -> settings.put("diagnostic_logs", on))));
         performance.addView(Ui.row(this, "Thread sampling",
-            "With diagnostic logging: records where the busiest thread and the GPU command thread spend their time. Makes the log much larger.",
+            "With diagnostic logging: records where the busiest thread and the GPU command thread spend their time, and who waits for the emulator's global lock. Makes the log much larger.",
             Ui.toggle(this, settings.threadSamples(), on -> settings.put("thread_samples", on))));
         column.addView(performance, Ui.fill(this, 16));
 

@@ -166,6 +166,7 @@ final class Settings {
         String samples = diag && threadSamples() ? "true" : "false";
         managed.put("log_thread_samples", samples);
         managed.put("log_thread_samples_all", samples);
+        managed.put("log_global_lock", samples);
         managed.put("log_thread_samples_match", "\"GPU Commands\"");
 
         File config = new File(storage, "fable_2.toml");
