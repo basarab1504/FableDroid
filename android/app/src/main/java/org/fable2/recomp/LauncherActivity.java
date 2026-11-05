@@ -20,7 +20,7 @@ import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 public final class LauncherActivity extends Activity {
-    private static final int PICK_ISO = 1, PICK_ZIP = 2, EXPORT_SAVES = 3;
+    private static final int PICK_ISO = 1, PICK_ZIP = 2, EXPORT_SAVES = 3, EXPORT_LOGS = 4;
     private Settings settings;
     private TextView status, version;
     private Button playButton, isoButton, zipButton, cancelButton;
@@ -225,7 +225,7 @@ public final class LauncherActivity extends Activity {
 
         LinearLayout data = Ui.card(this);
         data.addView(Ui.title(this, "Saves and files"));
-        data.addView(Ui.text(this, "Saves, settings and logs are in Android/data/org.fable2.recomp/files on "
+        data.addView(Ui.text(this, "Saves, settings and logs are in Android/data/" + BuildConfig.APPLICATION_ID + "/files on "
             + "internal storage. Reinstalling the game files never touches your saves; uninstalling the app deletes them, "
             + "so export a backup first.", 13, Ui.MUTED, false));
         LinearLayout dataButtons = new LinearLayout(this);
@@ -238,6 +238,18 @@ public final class LauncherActivity extends Activity {
             startActivityForResult(intent, EXPORT_SAVES);
         });
         dataButtons.addView(export);
+        Button exportLogs = Ui.secondary(this, "Export logs");
+        exportLogs.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/zip");
+            intent.putExtra(Intent.EXTRA_TITLE, "fable2-logs.zip");
+            startActivityForResult(intent, EXPORT_LOGS);
+        });
+        LinearLayout.LayoutParams logsGap = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        logsGap.leftMargin = Ui.dp(this, 10);
+        dataButtons.addView(exportLogs, logsGap);
         data.addView(dataButtons, Ui.fill(this, 10));
         column.addView(data, Ui.fill(this, 16));
 
@@ -306,6 +318,7 @@ public final class LauncherActivity extends Activity {
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (request == EXPORT_SAVES) { exportSaves(uri); return; }
+        if (request == EXPORT_LOGS) { exportLogs(uri); return; }
         if (request == PICK_ISO || request == PICK_ZIP) startImport(uri, request == PICK_ISO);
     }
 
@@ -519,6 +532,74 @@ public final class LauncherActivity extends Activity {
             final String m = message;
             runOnUiThread(() -> toast(m));
         }, "SaveExport").start();
+    }
+
+    // Logs for bug reports: the game's own logs and config (top-level text files, no saves or
+    // game data), this app's logcat (apps can read their own lines, including the previous
+    // process's "Fatal signal" line), and Android's records of how recent processes ended.
+    // For a native crash, getTraceInputStream() is the tombstone (protobuf with readable
+    // backtrace strings); for an ANR it is the thread dump.
+    private void exportLogs(Uri uri) {
+        new Thread(() -> {
+            String message;
+            try (OutputStream raw = getContentResolver().openOutputStream(uri);
+                 ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(raw))) {
+                File base = root();
+                int[] count = { 0 };
+                File[] files = base == null ? null : base.listFiles();
+                if (files != null) for (File f : files) {
+                    String n = f.getName().toLowerCase(java.util.Locale.ROOT);
+                    if (!f.isFile() || f.length() > (256L << 20)) continue;
+                    if (n.endsWith(".log") || n.endsWith(".toml") || n.endsWith(".json") || n.endsWith(".txt"))
+                        addToZip(zip, base, f, count);
+                }
+                zip.putNextEntry(new ZipEntry("device.txt"));
+                zip.write(("app " + BuildConfig.APPLICATION_ID + " " + BuildConfig.VERSION_NAME + "\n"
+                    + "device " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+                    + " soc " + android.os.Build.SOC_MODEL + " android " + android.os.Build.VERSION.RELEASE
+                    + " sdk " + android.os.Build.VERSION.SDK_INT + "\n"
+                    + "gpu " + GpuDetector.renderer() + "\ndriver " + settings.driver() + "\n").getBytes("UTF-8"));
+                zip.closeEntry();
+                try {
+                    Process logcat = new ProcessBuilder("logcat", "-d", "-v", "threadtime").redirectErrorStream(true).start();
+                    zip.putNextEntry(new ZipEntry("logcat.txt"));
+                    try (InputStream in = logcat.getInputStream()) {
+                        byte[] buffer = new byte[1 << 16];
+                        for (int n; (n = in.read(buffer)) > 0; ) zip.write(buffer, 0, n);
+                    }
+                    zip.closeEntry();
+                    ++count[0];
+                } catch (IOException e) { /* logcat unavailable */ }
+                android.app.ActivityManager am = getSystemService(android.app.ActivityManager.class);
+                List<android.app.ApplicationExitInfo> exits = am.getHistoricalProcessExitReasons(null, 0, 10);
+                StringBuilder summary = new StringBuilder();
+                java.text.SimpleDateFormat time = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US);
+                int index = 0;
+                for (android.app.ApplicationExitInfo e : exits) {
+                    summary.append(index).append(": ").append(time.format(new java.util.Date(e.getTimestamp())))
+                        .append(" reason=").append(e.getReason()).append(" status=").append(e.getStatus())
+                        .append(" importance=").append(e.getImportance()).append(" pss_kb=").append(e.getPss())
+                        .append(" rss_kb=").append(e.getRss()).append(" process=").append(e.getProcessName())
+                        .append(" description=").append(e.getDescription()).append('\n');
+                    try (InputStream trace = e.getTraceInputStream()) {
+                        if (trace != null) {
+                            zip.putNextEntry(new ZipEntry("exit-" + index + "-reason" + e.getReason() + ".trace"));
+                            byte[] buffer = new byte[1 << 16];
+                            for (int n; (n = trace.read(buffer)) > 0; ) zip.write(buffer, 0, n);
+                            zip.closeEntry();
+                            ++count[0];
+                        }
+                    } catch (IOException ignored) {}
+                    ++index;
+                }
+                zip.putNextEntry(new ZipEntry("exit-reasons.txt"));
+                zip.write(summary.toString().getBytes("UTF-8"));
+                zip.closeEntry();
+                message = "Exported " + count[0] + " log files.";
+            } catch (Exception e) { message = "Log export failed: " + e.getMessage(); }
+            final String m = message;
+            runOnUiThread(() -> toast(m));
+        }, "LogExport").start();
     }
 
     private static void addToZip(ZipOutputStream zip, File base, File f, int[] count) throws IOException {
