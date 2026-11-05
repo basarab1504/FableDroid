@@ -127,6 +127,24 @@ final class Ui {
         return row;
     }
 
+    /** Like row, but the control goes on its own line under the label and description. */
+    static LinearLayout stackedRow(Context c, String label, String description, View control) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(c, 8), 0, dp(c, 8));
+        row.addView(text(c, label, 16, IVORY, true));
+        if (description != null) {
+            TextView d = text(c, description, 13, MUTED, false);
+            d.setPadding(0, dp(c, 2), 0, 0);
+            row.addView(d);
+        }
+        LinearLayout.LayoutParams below = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        below.topMargin = dp(c, 8);
+        row.addView(control, below);
+        return row;
+    }
+
     static Switch toggle(Context c, boolean checked, java.util.function.Consumer<Boolean> changed) {
         Switch s = new Switch(c);
         s.setChecked(checked);
