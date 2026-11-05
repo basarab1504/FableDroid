@@ -1003,7 +1003,7 @@ index e2d3f99..1e2dd4e 100644
          if (!worker_running_) {
            // Short-circuited exit.
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 6d09240..92444f1 100644
+index 6d09240..61acc22 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
 @@ -31,6 +31,25 @@
@@ -1032,7 +1032,7 @@ index 6d09240..92444f1 100644
  REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
      .allowed({"none", "fxaa", "fxaa_extreme"})
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-@@ -45,8 +64,301 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
+@@ -45,8 +64,357 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
                      "Pace emulated vblank interrupts at the guest refresh rate when VSync is on")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
  
@@ -1062,6 +1062,10 @@ index 6d09240..92444f1 100644
 +std::atomic<int> sample_target_tid{0};
 +std::atomic<uint64_t> sample_sequence{0};
 +std::atomic<uintptr_t> sample_pc{0}, sample_lr{0};
++// Return addresses from the frame-pointer chain at the sample, so time inside libc (futex,
++// write, mprotect) can be charged to the first caller outside libc.
++constexpr int kSampleFrames = 10;
++std::atomic<uintptr_t> sample_frames[kSampleFrames];
 +
 +void SampleSignalHandler(int, siginfo_t*, void* context) {
 +  if (int(syscall(SYS_gettid)) != sample_target_tid.load(std::memory_order_acquire)) return;
@@ -1069,6 +1073,21 @@ index 6d09240..92444f1 100644
 +  const auto* uc = static_cast<const ucontext_t*>(context);
 +  sample_pc.store(uintptr_t(uc->uc_mcontext.pc), std::memory_order_relaxed);
 +  sample_lr.store(uintptr_t(uc->uc_mcontext.regs[30]), std::memory_order_relaxed);
++  // Walk x29 only while it stays inside this thread's stack above sp (16-byte aligned,
++  // increasing, within 1 MiB) so a garbage frame pointer is never dereferenced.
++  uintptr_t fp = uintptr_t(uc->uc_mcontext.regs[29]);
++  const uintptr_t sp = uintptr_t(uc->uc_mcontext.sp);
++  int depth = 0;
++  for (; depth < kSampleFrames; ++depth) {
++    if (!fp || (fp & 15) || fp < sp || fp - sp > (1u << 20)) break;
++    const uintptr_t* frame = reinterpret_cast<const uintptr_t*>(fp);
++    const uintptr_t next = frame[0], ret = frame[1];
++    if (!ret) break;
++    sample_frames[depth].store(ret, std::memory_order_relaxed);
++    if (next <= fp) { ++depth; break; }
++    fp = next;
++  }
++  for (; depth < kSampleFrames; ++depth) sample_frames[depth].store(0, std::memory_order_relaxed);
 +#else
 +  (void)context;
 +#endif
@@ -1100,6 +1119,20 @@ index 6d09240..92444f1 100644
 +    sigaction(SIGPROF, &action, nullptr);
 +  });
 +  std::unordered_map<uintptr_t, uint32_t> pcs, lrs;
++  std::unordered_map<std::string, uint32_t> callers;
++  std::unordered_map<uintptr_t, bool> in_libc_cache;
++  auto in_libc = [&](uintptr_t address) {
++    auto it = in_libc_cache.find(address);
++    if (it != in_libc_cache.end()) return it->second;
++    Dl_info info{};
++    bool libc = false;
++    if (address && dladdr(reinterpret_cast<void*>(address), &info) && info.dli_fname) {
++      const char* slash = std::strrchr(info.dli_fname, '/');
++      const char* file = slash ? slash + 1 : info.dli_fname;
++      libc = !std::strcmp(file, "libc.so") || !std::strcmp(file, "libc++_shared.so");
++    }
++    return in_libc_cache[address] = libc;
++  };
 +  uint32_t taken = 0;
 +  sample_target_tid.store(tid, std::memory_order_release);
 +  for (int i = 0; i < 200; ++i) {
@@ -1112,6 +1145,20 @@ index 6d09240..92444f1 100644
 +      ++pcs[sample_pc.load(std::memory_order_relaxed)];
 +      ++lrs[sample_lr.load(std::memory_order_relaxed)];
 +      ++taken;
++      // Key: the libc function sampled (if any) plus the first two callers outside libc.
++      const uintptr_t pc = sample_pc.load(std::memory_order_relaxed);
++      std::string key = in_libc(pc) ? DescribeCodeAddress(pc) + " <" : std::string();
++      int outside = 0;
++      uintptr_t chain[kSampleFrames + 1];
++      chain[0] = sample_lr.load(std::memory_order_relaxed);
++      for (int f = 0; f < kSampleFrames; ++f) chain[f + 1] = sample_frames[f].load(std::memory_order_relaxed);
++      for (int f = in_libc(pc) ? 0 : 1; f <= kSampleFrames && outside < 2; ++f) {
++        if (!chain[f] || in_libc(chain[f])) continue;
++        key += " " + DescribeCodeAddress(chain[f]);
++        ++outside;
++      }
++      if (!in_libc(pc)) key = DescribeCodeAddress(pc) + " <" + key;
++      ++callers[key];
 +    }
 +    std::this_thread::sleep_for(std::chrono::milliseconds(5));
 +  }
@@ -1127,6 +1174,15 @@ index 6d09240..92444f1 100644
 +  };
 +  REXGPU_INFO("Thread samples [{}]{} n={} pc:{}", tid, name, taken, top(pcs));
 +  REXGPU_INFO("Thread samples [{}]{} n={} lr:{}", tid, name, taken, top(lrs));
++  {
++    std::vector<std::pair<std::string, uint32_t>> sorted(callers.begin(), callers.end());
++    std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) { return a.second > b.second; });
++    std::string text;
++    for (size_t i = 0; i < sorted.size() && i < 16; ++i) {
++      text += fmt::format(" | {}x {}", sorted[i].second, sorted[i].first);
++    }
++    REXGPU_INFO("Thread samples callers [{}]{} n={}{}", tid, name, taken, text);
++  }
 +  if (REXCVAR_GET(log_thread_samples_all)) {
 +    std::vector<std::pair<uintptr_t, uint32_t>> all(pcs.begin(), pcs.end());
 +    std::sort(all.begin(), all.end(), [](auto& a, auto& b) { return a.second > b.second; });
@@ -1334,7 +1390,7 @@ index 6d09240..92444f1 100644
  rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
      const std::string& effect_name) {
    std::string lowered = effect_name;
-@@ -141,6 +453,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -141,6 +509,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
      REXGPU_ERROR("Unable to initialize command processor");
      return X_STATUS_UNSUCCESSFUL;
    }
