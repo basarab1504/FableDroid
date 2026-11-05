@@ -553,6 +553,13 @@ public final class LauncherActivity extends Activity {
                     if (n.endsWith(".log") || n.endsWith(".toml") || n.endsWith(".json") || n.endsWith(".txt"))
                         addToZip(zip, base, f, count);
                 }
+                // The game's own logs go to logs/ (sequential names); keep the newest few.
+                File[] logs = base == null ? null : new File(base, "logs").listFiles();
+                if (logs != null) {
+                    java.util.Arrays.sort(logs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+                    for (int i = 0; i < logs.length && i < 5; ++i)
+                        if (logs[i].isFile() && logs[i].length() <= (256L << 20)) addToZip(zip, base, logs[i], count);
+                }
                 zip.putNextEntry(new ZipEntry("device.txt"));
                 zip.write(("app " + BuildConfig.APPLICATION_ID + " " + BuildConfig.VERSION_NAME + "\n"
                     + "device " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
