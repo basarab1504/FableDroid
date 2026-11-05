@@ -190,6 +190,9 @@ public final class LauncherActivity extends Activity {
         performance.addView(Ui.row(this, "Fast cores for GPU and audio threads",
             "Keeps the GPU command and audio threads off the slowest CPU cluster and reports the GPU thread's work to Android's performance hints.",
             Ui.toggle(this, settings.fastCores(), on -> settings.put("fast_cores", on))));
+        performance.addView(Ui.row(this, "Wake waiting threads on signal",
+            "Threads waiting on several events wake when one is signalled instead of checking every millisecond. Turn off together with the options above to run like the original build.",
+            Ui.toggle(this, settings.signalWaits(), on -> settings.put("signal_waits", on))));
         performance.addView(Ui.row(this, "Resolve-to-texture shortcut (experimental)",
             "Copies a just-rendered RGBA8 image straight into the texture that reads it back, instead of decoding it from emulated memory again. Unverified: turn off if you see wrong or flickering images.",
             Ui.toggle(this, settings.resolveShortcut(), on -> settings.put("resolve_shortcut", on))));

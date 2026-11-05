@@ -76,6 +76,7 @@ final class Settings {
     boolean uploadCache() { return prefs.getBoolean("upload_cache", true); }
     boolean separatePresentQueue() { return prefs.getBoolean("separate_present_queue", true); }
     boolean fastCores() { return prefs.getBoolean("fast_cores", true); }
+    boolean signalWaits() { return prefs.getBoolean("signal_waits", true); }
     boolean resolveShortcut() { return prefs.getBoolean("resolve_shortcut", false); }
     boolean diagnosticLogs() { return prefs.getBoolean("diagnostic_logs", false); }
     int touchMode() { return prefs.getInt("touch_mode", TOUCH_AUTO); }
@@ -141,6 +142,7 @@ final class Settings {
         managed.put("android_worker_big_cores", cores);
         managed.put("android_audio_big_cores", cores);
         managed.put("android_worker_adpf", cores);
+        managed.put("posix_wait_multiple_events", signalWaits() ? "true" : "false");
         managed.put("vulkan_resolve_texture_shortcut", resolveShortcut() ? "true" : "false");
 
         // Diagnostic logging: the FIFA port's log set plus this project's GPUSTAT/GPUTIME
