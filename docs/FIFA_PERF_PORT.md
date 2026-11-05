@@ -73,8 +73,10 @@ on) has battery temperature, charge, power saver and thermal status.
 
 Launcher: Graphics → **Render resolution** (default 720p). Writes `fable2_render_height`
 (0 = native). The `RenderConfigInit_8238DE58` hotfunc overwrites the main render size the game
-stores (offsets 148/152, next to the MSAA mode): 1120×720 → 840×540, 744×480 or 560×360; in the
-game's 960-wide case → 720×540, 640×480, 480×360. The game's own path scales that to the
+stores (offsets 148/152, next to the MSAA mode): 1120×720 → 832×544, 736×480 or 576×368; in the
+game's 960-wide case → 736×544, 640×480, 480×368. Width is a multiple of 32 and height of 16, the
+same alignment as 1120×720. (The first version rounded to 8, giving 744×480, and the game crashed
+right after the size change: a tiled-layout vector grew to 308 MB and a guest allocation failed.) The game's own path scales that to the
 1280×720 front buffer. Unlike FIFA's 480p/360p this changes the guest render size, not only the
 output. The log line `Fable II render size ... (fable2_render_height)` confirms it applied.
 

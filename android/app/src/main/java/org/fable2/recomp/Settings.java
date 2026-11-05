@@ -54,7 +54,7 @@ final class Settings {
 
     int resolutionScale() { return prefs.getInt("resolution_scale", 1); }
     // Main render height presets below the native 720 lines (0 = native). Applied in the
-    // RenderConfigInit hotfunc; width follows the game's aspect (1120x720 -> 840x540, 744x480, 560x360).
+    // RenderConfigInit hotfunc; width follows the game's aspect (1120x720 -> 832x544, 736x480, 576x368).
     static final int[] RENDER_HEIGHTS = { 0, 540, 480, 360 };
     int renderHeight() { return prefs.getInt("render_height", 0); }
     boolean msaa() { return prefs.getBoolean("msaa", false); }

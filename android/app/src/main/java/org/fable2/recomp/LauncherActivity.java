@@ -158,7 +158,7 @@ public final class LauncherActivity extends Activity {
         for (int i = 0; i < Settings.RENDER_HEIGHTS.length; ++i)
             if (Settings.RENDER_HEIGHTS[i] == settings.renderHeight()) heightIndex = i;
         graphics.addView(Ui.row(this, "Render resolution",
-            "Renders the game below its native 720 lines and scales it to the screen: 540p (840×540), 480p (744×480), 360p (560×360). "
+            "Renders the game below its native 720 lines and scales it to the screen: 540p (832×544), 480p (736×480), 360p (576×368). "
             + "Fewer pixels for the GPU, blurrier image. Experimental: if the picture looks cropped or misplaced, go back to 720p.",
             Ui.segmented(this, new String[] { "720p", "540p", "480p", "360p" }, heightIndex,
                 i -> settings.put("render_height", Settings.RENDER_HEIGHTS[i]))));

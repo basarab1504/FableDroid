@@ -20,12 +20,16 @@
 //
 // Render height presets (cvar fable2_render_height, 0 = native 720): the same
 // tail stores the main render width/height, so we overwrite them after the
-// original runs. The width is scaled from whatever the game stored (1120, or
-// 960 in its 4:3 case) to keep the aspect, rounded to a multiple of 8. Only
-// heights below 720 are applied (360, 480, 540 in the launcher); the game's
-// own path then scales this smaller render to the 1280x720 front buffer.
-// Unverified on device: if a pass assumes 720 lines it will show up as a
-// misplaced/cropped image, so the default stays native.
+// original runs. The height is rounded to a multiple of 16 and the width,
+// scaled from whatever the game stored (1120, or 960 in its 4:3 case) to keep
+// the aspect, to a multiple of 32: the same power-of-two alignment as the
+// native 1120x720 (1120 = 35*32, 720 = 45*16). Xenos surfaces are tiled in
+// 32x32 tiles; with 744x480 (width rounded to 8 only) the game's tiled-layout
+// setup right after this call grew one vector without bound (12 MB -> 308 MB
+// in under a second) until a guest allocation failed and it wrote through
+// null. Launcher presets: 540 -> 832x544, 480 -> 736x480, 360 -> 576x368.
+// Only heights below 720 are applied; the game's own path scales the smaller
+// render to the 1280x720 front buffer. The default stays native.
 #include "fable_2_pch.h"
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -56,10 +60,10 @@ extern "C" void sub_8238DE58(PPCContext& __restrict ctx, uint8_t* base) {
   if (target_height >= kMinRenderHeight) {
     const uint32_t width = REX_LOAD_U32(self + kWidthOffset);
     const uint32_t height = REX_LOAD_U32(self + kHeightOffset);
-    if (height > target_height && width != 0) {
-      uint32_t new_width = (uint32_t)((uint64_t(width) * target_height + height / 2) / height);
-      new_width = (new_width + 4) & ~7u;
-      const uint32_t new_height = target_height & ~7u;
+    if (height > target_height && width != 0 && height % 16 == 0) {
+      const uint32_t new_height = (target_height + 8) & ~15u;
+      uint32_t new_width = (uint32_t)((uint64_t(width) * new_height + height / 2) / height);
+      new_width = (new_width + 16) & ~31u;
       REX_STORE_U32(self + kWidthOffset, new_width);
       REX_STORE_U32(self + kHeightOffset, new_height);
       REXLOG_INFO("Fable II render size {}x{} -> {}x{} (fable2_render_height)", width, height,
