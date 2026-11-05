@@ -512,6 +512,59 @@ index 0000000..df1b22d
 +};
 +
 +}  // namespace rex::graphics
+diff --git a/include/rex/thread/mutex.h b/include/rex/thread/mutex.h
+index 6e5755a..3163493 100644
+--- a/include/rex/thread/mutex.h
++++ b/include/rex/thread/mutex.h
+@@ -11,10 +11,28 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <cstdint>
+ #include <mutex>
++#include <vector>
+ 
+ namespace rex::thread {
+ 
++// log_global_lock: contention profiling of the global critical region. Off by default; while
++// off, Acquire/AcquireDirect cost one relaxed load more than before.
++extern std::atomic<bool> global_lock_profiling;
++// Locks `mutex`; if it was contended, records how long this thread waited and which thread
++// (the last profiled acquirer) held it, with both acquisition sites (return addresses).
++void GlobalLockAcquireProfiled(std::recursive_mutex& mutex);
++struct GlobalLockContention {
++  int waiter_tid, holder_tid;
++  uintptr_t waiter_site, holder_site;
++  uint64_t wait_ns;
++  uint32_t count;
++};
++// Returns and clears the contention records gathered since the last call.
++std::vector<GlobalLockContention> TakeGlobalLockContention();
++
+ // The global critical region mutex singleton.
+ // This must guard any operation that may suspend threads or be sensitive to
+ // being suspended such as global table locks and such.
+@@ -62,11 +80,19 @@ class global_critical_region {
+   // to keep an instance of global_critical_region near the members requiring
+   // it to keep things readable.
+   static std::unique_lock<std::recursive_mutex> AcquireDirect() {
++    if (global_lock_profiling.load(std::memory_order_relaxed)) {
++      GlobalLockAcquireProfiled(mutex());
++      return std::unique_lock<std::recursive_mutex>(mutex(), std::adopt_lock);
++    }
+     return std::unique_lock<std::recursive_mutex>(mutex());
+   }
+ 
+   // Acquires a lock on the global critical section.
+   inline std::unique_lock<std::recursive_mutex> Acquire() {
++    if (global_lock_profiling.load(std::memory_order_relaxed)) {
++      GlobalLockAcquireProfiled(mutex());
++      return std::unique_lock<std::recursive_mutex>(mutex(), std::adopt_lock);
++    }
+     return std::unique_lock<std::recursive_mutex>(mutex());
+   }
+ 
 diff --git a/include/rex/ui/vulkan/device.h b/include/rex/ui/vulkan/device.h
 index 947817f..3020752 100644
 --- a/include/rex/ui/vulkan/device.h
@@ -685,6 +738,95 @@ index edaa98d..87a3c61 100644
    SDL_stack_free(data);
  }
  
+diff --git a/src/core/mutex.cpp b/src/core/mutex.cpp
+index d639924..5069c80 100644
+--- a/src/core/mutex.cpp
++++ b/src/core/mutex.cpp
+@@ -11,8 +11,84 @@
+ 
+ #include <rex/thread/mutex.h>
+ 
++#include <chrono>
++
++#if defined(_WIN32)
++#include <windows.h>
++#else
++#include <sys/syscall.h>
++#include <unistd.h>
++#endif
++
+ namespace rex::thread {
+ 
++std::atomic<bool> global_lock_profiling{false};
++
++namespace {
++std::atomic<int> global_lock_owner_tid{0};
++std::atomic<uintptr_t> global_lock_owner_site{0};
++std::mutex global_lock_stats_mutex;
++std::vector<GlobalLockContention> global_lock_stats;
++constexpr size_t kMaxGlobalLockRecords = 256;
++
++int CurrentTid() {
++  thread_local int tid = 0;
++  if (!tid) {
++#if defined(_WIN32)
++    tid = int(GetCurrentThreadId());
++#else
++    tid = int(syscall(SYS_gettid));
++#endif
++  }
++  return tid;
++}
++}  // namespace
++
++// Not inlined: its return address is a point inside the function that took the lock.
++__attribute__((noinline)) void GlobalLockAcquireProfiled(std::recursive_mutex& mutex) {
++  const uintptr_t site = uintptr_t(__builtin_return_address(0));
++  if (!mutex.try_lock()) {
++    const int holder = global_lock_owner_tid.load(std::memory_order_relaxed);
++    const uintptr_t holder_site = global_lock_owner_site.load(std::memory_order_relaxed);
++    const auto start = std::chrono::steady_clock::now();
++    mutex.lock();
++    const uint64_t waited = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                         std::chrono::steady_clock::now() - start).count());
++    const int self = CurrentTid();
++    std::lock_guard<std::mutex> guard(global_lock_stats_mutex);
++    GlobalLockContention* record = nullptr;
++    for (auto& r : global_lock_stats) {
++      if (r.waiter_tid == self && r.waiter_site == site && r.holder_tid == holder &&
++          r.holder_site == holder_site) {
++        record = &r;
++        break;
++      }
++    }
++    if (!record) {
++      if (global_lock_stats.size() < kMaxGlobalLockRecords) {
++        global_lock_stats.push_back({self, holder, site, holder_site, 0, 0});
++      } else {
++        // Table full: fold into one catch-all record.
++        global_lock_stats.back() = {0, 0, 0, 0, global_lock_stats.back().wait_ns,
++                                    global_lock_stats.back().count};
++      }
++      record = &global_lock_stats.back();
++    }
++    record->wait_ns += waited;
++    ++record->count;
++  }
++  // Nested (recursive) acquisitions overwrite the site with the inner one.
++  global_lock_owner_tid.store(CurrentTid(), std::memory_order_relaxed);
++  global_lock_owner_site.store(site, std::memory_order_relaxed);
++}
++
++std::vector<GlobalLockContention> TakeGlobalLockContention() {
++  std::lock_guard<std::mutex> guard(global_lock_stats_mutex);
++  std::vector<GlobalLockContention> out;
++  out.swap(global_lock_stats);
++  return out;
++}
++
+ std::recursive_mutex& global_critical_region::mutex() {
+   static std::recursive_mutex global_mutex;
+   return global_mutex;
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
 index 8e58e84..d89daee 100644
 --- a/src/core/threading_posix.cpp
@@ -1003,7 +1145,7 @@ index e2d3f99..1e2dd4e 100644
          if (!worker_running_) {
            // Short-circuited exit.
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 6d09240..61acc22 100644
+index 6d09240..0c5fbda 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
 @@ -31,6 +31,25 @@
@@ -1032,7 +1174,7 @@ index 6d09240..61acc22 100644
  REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
      .allowed({"none", "fxaa", "fxaa_extreme"})
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-@@ -45,8 +64,357 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
+@@ -45,8 +64,404 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
                      "Pace emulated vblank interrupts at the guest refresh rate when VSync is on")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
  
@@ -1051,6 +1193,10 @@ index 6d09240..61acc22 100644
 +REXCVAR_DEFINE_STRING(log_thread_samples_match, "", "GPU",
 +                      "With log_thread_samples: also sample the busiest other thread whose name "
 +                      "contains this text (at least 20% of a core), e.g. Job Manager.");
++REXCVAR_DEFINE_BOOL(log_global_lock, false, "GPU",
++                    "With log_thread_cpu: every 5 seconds log the longest waits for the global "
++                    "critical region by waiter and holder thread and acquisition site (diagnostic).")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 +REXCVAR_DEFINE_BOOL(log_thread_samples_all, false, "GPU",
 +                    "With log_thread_samples: also log every sampled pc (not only the top 8), for "
 +                    "offline symbolization of threads whose time is spread over many functions.");
@@ -1198,9 +1344,51 @@ index 6d09240..61acc22 100644
 +
 +// /proc counterpart of the Win32 thread CPU logger: every 5 seconds, threads that used at
 +// least 5% of one core, with their name and the CPU they last ran on.
++std::string ProcThreadName(int tid) {
++  char path[64];
++  std::snprintf(path, sizeof(path), "/proc/self/task/%d/comm", tid);
++  std::string name;
++  if (FILE* f = std::fopen(path, "r")) {
++    char buffer[64] = {};
++    if (std::fgets(buffer, sizeof(buffer), f)) name = buffer;
++    std::fclose(f);
++  }
++  while (!name.empty() && (name.back() == '\n' || name.back() == ' ')) name.pop_back();
++  return name.empty() ? fmt::format("tid{}", tid) : name;
++}
++
++// log_global_lock: who waited for the global critical region, for how long, and who held it.
++void LogGlobalLockContention() {
++  std::vector<rex::thread::GlobalLockContention> records = rex::thread::TakeGlobalLockContention();
++  if (records.empty()) return;
++  std::map<int, uint64_t> per_waiter;
++  uint64_t total = 0;
++  for (const auto& r : records) {
++    per_waiter[r.waiter_tid] += r.wait_ns;
++    total += r.wait_ns;
++  }
++  std::sort(records.begin(), records.end(),
++            [](const auto& a, const auto& b) { return a.wait_ns > b.wait_ns; });
++  std::string waiters;
++  for (const auto& [tid, ns] : per_waiter) {
++    if (ns >= 5000000) waiters += fmt::format(" {}={:.0f}ms", ProcThreadName(tid), ns / 1e6);
++  }
++  std::string text;
++  for (size_t i = 0; i < records.size() && i < 12; ++i) {
++    const auto& r = records[i];
++    text += fmt::format(" | {:.1f}ms n{} {}@{} <- {}@{}", r.wait_ns / 1e6, r.count,
++                        ProcThreadName(r.waiter_tid), DescribeCodeAddress(r.waiter_site),
++                        r.holder_tid ? ProcThreadName(r.holder_tid) : std::string("?"),
++                        DescribeCodeAddress(r.holder_site));
++  }
++  REXGPU_INFO("Global lock waits (5s): total={:.0f}ms per waiter:{}{}", total / 1e6, waiters,
++              text);
++}
++
 +void StartProcThreadCpuLogger() {
 +  static std::once_flag once;
 +  std::call_once(once, [] {
++    if (REXCVAR_GET(log_global_lock)) rex::thread::global_lock_profiling.store(true);
 +    std::thread([] {
 +      struct Sample { uint64_t ticks; std::string name; int cpu; };
 +      const double hz = double(sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100);
@@ -1271,6 +1459,7 @@ index 6d09240..61acc22 100644
 +        previous.clear();
 +        for (const auto& [tid, sample] : now_samples) previous[tid] = sample.ticks;
 +        if (!busy.empty()) REXGPU_INFO("Thread CPU (>=5% of a core, 5s):{}", busy);
++        if (REXCVAR_GET(log_global_lock)) LogGlobalLockContention();
 +        if (hottest_tid && REXCVAR_GET(log_thread_samples)) {
 +          // The next interval starts at `last`, before sampling, so its CPU share stays exact.
 +          SampleThread(hottest_tid, hottest_name);
@@ -1390,7 +1579,7 @@ index 6d09240..61acc22 100644
  rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
      const std::string& effect_name) {
    std::string lowered = effect_name;
-@@ -141,6 +509,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -141,6 +556,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
      REXGPU_ERROR("Unable to initialize command processor");
      return X_STATUS_UNSUCCESSFUL;
    }
