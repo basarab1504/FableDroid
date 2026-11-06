@@ -237,3 +237,18 @@ functions reading r14–r31 before writing them and 358 reading r0/r11/r12 first
 handlers receiving the parent frame in r12, `__savevmx_*`), so `non_volatile_as_local` and
 `non_argument_as_local` are unsafe for Fable II. `fable2_codegen_local.toml` now keeps only
 `ctr/xer/reserved/cr_as_local` (r13-local2).
+
+**r13-local2 result (run 021, ~93 s):** starts and plays, no crash. Compared with run 017 (r12,
+same settings; r13 with *Aggressive hot pages* off behaves the same), but 021 ran on a warm phone
+(33 °C, thermal status 1–3 vs 25 °C, 0):
+
+| | 017 (ctx registers) | 021 (CR/CTR/XER/reserved local) |
+|---|---|---|
+| Guest FPS, gameplay 5 s averages | 17.7–23.4, mean 20.5 | 14.9–25.1, mean 21.2 |
+| GameThread / 3D Engine CPU | 39% / 29% | 36% / 25% |
+| GPU Commands CPU | 39% | 36% |
+| GPU worker CPU per frame | 28–39 ms | 22–43 ms |
+
+No measurable FPS change, as expected while the GPU command thread is the limit; the guest
+threads used somewhat less CPU despite the warmer phone, but one short run each on different
+thermal states is not enough to claim it.
