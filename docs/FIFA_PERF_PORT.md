@@ -229,3 +229,11 @@ separate worktree, so the default build is unchanged.
   headers, which change with the partitioning; they now declare their callees.
 - Not checked yet: setjmp/longjmp (translated as `env = ctx; ppc_setjmp(); if (ret) ctx = env;`,
   same as XenonRecomp) and midasm hooks at run time.
+
+**r13-local result: crashed at start.** `xstart` → … → `TailCall_82238FCC` read guest 0x64: the
+fragment computes `r31 + 100` from the parent's frame register, which with
+`non_volatile_as_local` is an uninitialised local (0). A scan of the generated code found 199
+functions reading r14–r31 before writing them and 358 reading r0/r11/r12 first (exception
+handlers receiving the parent frame in r12, `__savevmx_*`), so `non_volatile_as_local` and
+`non_argument_as_local` are unsafe for Fable II. `fable2_codegen_local.toml` now keeps only
+`ctr/xer/reserved/cr_as_local` (r13-local2).

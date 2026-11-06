@@ -1,9 +1,15 @@
-# Experiment (r13-local): the register options from the manifest's "Conservative settings"
-# block, which sits inside the last [[entrypoint.midasm_hook]] table and is therefore ignored.
-# skip_lr and skip_msr stay off (hotfuncs read ctx.lr; MSR is handled by guest_global_lock).
+# Experiment (r13-local): register options as in UnleashedRecomp's SWA.toml, minus the ones
+# that break Fable II. Not included by default; add to [entrypoint] includes to try it.
+#
+# Excluded (r13-local first attempt crashed at start in TailCall_82238FCC, read of guest 0x64):
+# - non_volatile_as_local: 199 generated functions read r14-r31 before writing them; they are
+#   fragments (exception landing pads, TailCall_*) that use the parent function's r31 frame.
+# - non_argument_as_local: 358 functions read r0/r11/r12 first; exception handlers get the
+#   parent frame in r12 (r31 = r12 - N) and __savevmx_* take their address in r11/r12.
+# - skip_lr (hotfuncs read ctx.lr), skip_msr (covered at run time by guest_global_lock).
+# Kept: no generated function reads ctr/xer/reserved before writing them; CR fields are read
+# first only by mfcr, which saves all fields and restores them within the same function.
 ctr_as_local = true
 xer_as_local = true
 reserved_as_local = true
 cr_as_local = true
-non_argument_as_local = true
-non_volatile_as_local = true
