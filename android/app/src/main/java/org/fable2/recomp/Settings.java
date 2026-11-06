@@ -163,6 +163,8 @@ final class Settings {
         managed.put("log_present_paints", d);
         managed.put("log_audio_output", d);
         managed.put("log_resolve_texture_loads", d);
+        // GPU write-watch faults and rearming (Memory watch line); a few relaxed atomics per fault.
+        managed.put("log_memory_watch", d);
         // Thread sampler (needs log_thread_cpu): ~200 pc/lr samples per interval of the busiest
         // thread and of the GPU command thread, every pc logged for offline symbolization.
         String samples = diag && threadSamples() ? "true" : "false";

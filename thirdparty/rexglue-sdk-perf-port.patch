@@ -512,6 +512,51 @@ index 0000000..df1b22d
 +};
 +
 +}  // namespace rex::graphics
+diff --git a/include/rex/memory/watch_stats.h b/include/rex/memory/watch_stats.h
+new file mode 100644
+index 0000000..b8a53bb
+--- /dev/null
++++ b/include/rex/memory/watch_stats.h
+@@ -0,0 +1,39 @@
++/**
++ * @modified    Android perf port, 2026 - write-watch statistics (log_memory_watch)
++ */
++
++#pragma once
++
++#include <atomic>
++#include <cstdint>
++#include <utility>
++#include <vector>
++
++namespace rex::memory {
++
++// log_memory_watch (diagnostic): GPU write-watch activity of the guest physical heap.
++// While off, each instrumented point costs one relaxed load.
++extern std::atomic<bool> watch_stats_enabled;
++
++struct WatchStatsSnapshot {
++  // Guest writes to watched pages (access violations handled by TriggerCallbacks), the time
++  // spent handling them (global lock held), and the unprotect calls they made.
++  uint64_t faults = 0, fault_ns = 0, fault_unprotect_calls = 0, fault_unprotect_pages = 0;
++  // EnableAccessCallbacks (GPU thread rearming watches): calls, mprotect calls and pages,
++  // and the time from taking the global lock to returning.
++  uint64_t rearm_calls = 0, rearm_protect_calls = 0, rearm_pages = 0, rearm_ns = 0;
++  // Fault count per 64 KiB physical region (region index, count), most first.
++  std::vector<std::pair<uint32_t, uint32_t>> top_regions;
++  // Fault count per host thread id, most first.
++  std::vector<std::pair<int, uint32_t>> fault_threads;
++};
++
++// Returns and clears the counters gathered since the last call.
++WatchStatsSnapshot TakeWatchStats();
++
++// Instrumentation (xmemory.cpp).
++void WatchStatsNoteFault(uint32_t physical_address, uint64_t ns);
++void WatchStatsNoteUnprotect(uint64_t pages);
++void WatchStatsNoteRearm(uint64_t protect_calls, uint64_t pages, uint64_t ns);
++
++}  // namespace rex::memory
 diff --git a/include/rex/thread/mutex.h b/include/rex/thread/mutex.h
 index 6e5755a..c5425ba 100644
 --- a/include/rex/thread/mutex.h
@@ -572,6 +617,24 @@ index 6e5755a..c5425ba 100644
 +    }
      return std::unique_lock<std::recursive_mutex>(mutex());
    }
+ 
+diff --git a/include/rex/ui/surface_android.h b/include/rex/ui/surface_android.h
+index 48a4d88..c07e44e 100644
+--- a/include/rex/ui/surface_android.h
++++ b/include/rex/ui/surface_android.h
+@@ -23,8 +23,11 @@ namespace ui {
+ 
+ class AndroidNativeWindowSurface final : public Surface {
+  public:
+-  explicit AndroidNativeWindowSurface(ANativeWindow* window, SDL_Window* sdl_window)
+-      : window_(window), sdl_window_(sdl_window) {}
++  // Holds its own reference to `window` (ANativeWindow_acquire): SDL releases its reference
++  // when Android destroys the surface (app sent to the background), and a VkSurfaceKHR created
++  // later from this object must not touch freed memory.
++  AndroidNativeWindowSurface(ANativeWindow* window, SDL_Window* sdl_window);
++  ~AndroidNativeWindowSurface() override;
+   TypeIndex GetType() const override { return kTypeIndex_AndroidNativeWindow; }
+   ANativeWindow* window() const { return window_; }
  
 diff --git a/include/rex/ui/vulkan/device.h b/include/rex/ui/vulkan/device.h
 index 947817f..3020752 100644
@@ -649,6 +712,23 @@ index 0000000..d156291
 +  return graphics_family == present_family ? reserved_index : 0;
 +}
 +} // namespace rex::ui::vulkan
+diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
+index 5079d0f..ae1a3ba 100644
+--- a/include/rex/ui/window_sdl.h
++++ b/include/rex/ui/window_sdl.h
+@@ -84,6 +84,12 @@ class WindowSDL final : public Window {
+   // expect. Never zero.
+   float GetPixelDensity() const;
+ 
++  // Android: when SDL's ANativeWindow differs from the one the presenter's surface was made
++  // from (destroyed in the background, recreated on resume), reattach the presenter
++  // (android_surface_refresh).
++  void SyncAndroidSurface();
++  void* android_surface_window_ = nullptr;
++
+   SDL_Window* sdl_window_ = nullptr;
+   SDL_WindowID sdl_window_id_ = 0;
+   std::atomic<bool> paint_pending_{false};
 diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
 index 68274d2..4623217 100644
 --- a/resources/templates/codegen/pch_h.inja
@@ -1200,10 +1280,18 @@ index e2d3f99..1e2dd4e 100644
          if (!worker_running_) {
            // Short-circuited exit.
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 6d09240..0c5fbda 100644
+index 6d09240..ccb33e6 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
-@@ -31,6 +31,25 @@
+@@ -24,6 +24,7 @@
+ #include <rex/graphics/flags.h>
+ #include <rex/kernel/xboxkrnl/video.h>
+ #include <rex/logging.h>
++#include <rex/memory/watch_stats.h>
+ #include <rex/stream.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xthread.h>
+@@ -31,6 +32,25 @@
  #include <rex/ui/window.h>
  #include <rex/ui/windowed_app_context.h>
  
@@ -1229,7 +1317,7 @@ index 6d09240..0c5fbda 100644
  REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
      .allowed({"none", "fxaa", "fxaa_extreme"})
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-@@ -45,8 +64,404 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
+@@ -45,8 +65,432 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
                      "Pace emulated vblank interrupts at the guest refresh rate when VSync is on")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
  
@@ -1251,6 +1339,11 @@ index 6d09240..0c5fbda 100644
 +REXCVAR_DEFINE_BOOL(log_global_lock, false, "GPU",
 +                    "With log_thread_cpu: every 5 seconds log the longest waits for the global "
 +                    "critical region by waiter and holder thread and acquisition site (diagnostic).")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_BOOL(log_memory_watch, false, "GPU",
++                    "With log_thread_cpu: every 5 seconds log GPU write-watch activity: guest write "
++                    "faults on watched pages (by thread and 64 KiB region) and the GPU thread's "
++                    "rearming mprotect calls (diagnostic).")
 +    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 +REXCVAR_DEFINE_BOOL(log_thread_samples_all, false, "GPU",
 +                    "With log_thread_samples: also log every sampled pc (not only the top 8), for "
@@ -1440,10 +1533,32 @@ index 6d09240..0c5fbda 100644
 +              text);
 +}
 +
++// log_memory_watch: write-watch faults and rearming over the last interval.
++void LogMemoryWatchStats() {
++  const rex::memory::WatchStatsSnapshot s = rex::memory::TakeWatchStats();
++  if (!s.faults && !s.rearm_calls) return;
++  std::string threads;
++  for (size_t i = 0; i < s.fault_threads.size() && i < 8; ++i) {
++    threads += fmt::format(" {}={}", ProcThreadName(s.fault_threads[i].first),
++                           s.fault_threads[i].second);
++  }
++  std::string regions;
++  for (size_t i = 0; i < s.top_regions.size() && i < 12; ++i) {
++    regions += fmt::format(" {:08X}={}", s.top_regions[i].first << 16, s.top_regions[i].second);
++  }
++  REXGPU_INFO(
++      "Memory watch (5s): faults={} handling={:.0f}ms unprotect_calls={} unprotect_pages={} | "
++      "rearm calls={} mprotect={} pages={} time={:.0f}ms | regions={} by thread:{} | top 64K:{}",
++      s.faults, s.fault_ns / 1e6, s.fault_unprotect_calls, s.fault_unprotect_pages, s.rearm_calls,
++      s.rearm_protect_calls, s.rearm_pages, s.rearm_ns / 1e6, s.top_regions.size(), threads,
++      regions);
++}
++
 +void StartProcThreadCpuLogger() {
 +  static std::once_flag once;
 +  std::call_once(once, [] {
 +    if (REXCVAR_GET(log_global_lock)) rex::thread::global_lock_profiling.store(true);
++    if (REXCVAR_GET(log_memory_watch)) rex::memory::watch_stats_enabled.store(true);
 +    std::thread([] {
 +      struct Sample { uint64_t ticks; std::string name; int cpu; };
 +      const double hz = double(sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100);
@@ -1515,6 +1630,7 @@ index 6d09240..0c5fbda 100644
 +        for (const auto& [tid, sample] : now_samples) previous[tid] = sample.ticks;
 +        if (!busy.empty()) REXGPU_INFO("Thread CPU (>=5% of a core, 5s):{}", busy);
 +        if (REXCVAR_GET(log_global_lock)) LogGlobalLockContention();
++        if (REXCVAR_GET(log_memory_watch)) LogMemoryWatchStats();
 +        if (hottest_tid && REXCVAR_GET(log_thread_samples)) {
 +          // The next interval starts at `last`, before sampling, so its CPU share stays exact.
 +          SampleThread(hottest_tid, hottest_name);
@@ -1634,7 +1750,7 @@ index 6d09240..0c5fbda 100644
  rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
      const std::string& effect_name) {
    std::string lowered = effect_name;
-@@ -141,6 +556,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -141,6 +585,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
      REXGPU_ERROR("Unable to initialize command processor");
      return X_STATUS_UNSUCCESSFUL;
    }
@@ -2841,6 +2957,186 @@ index c10694c..4cb0cae 100644
    auto fail = [this](X_STATUS status, std::string_view reason) {
      REXSYS_ERROR("Runtime::Setup failed: {}", reason);
      Shutdown();
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 9308f35..db98838 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -23,6 +24,7 @@
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
++#include <rex/memory/watch_stats.h>
+ #include <rex/math.h>
+ #include <rex/stream.h>
+ #include <rex/system/function_dispatcher.h>
+@@ -36,6 +38,81 @@
+ REXCVAR_DEFINE_BOOL(protect_zero, true, "Memory", "Protect the zero page from reads and writes")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++namespace rex::memory {
++std::atomic<bool> watch_stats_enabled{false};
++namespace {
++constexpr uint32_t kWatchRegions = 0x20000000u >> 16;  // 64 KiB regions of 512 MiB physical
++constexpr int kWatchThreadSlots = 64;
++std::atomic<uint64_t> ws_faults{0}, ws_fault_ns{0}, ws_unprotect_calls{0}, ws_unprotect_pages{0};
++std::atomic<uint64_t> ws_rearm_calls{0}, ws_rearm_protect_calls{0}, ws_rearm_pages{0},
++    ws_rearm_ns{0};
++std::atomic<uint32_t> ws_regions[kWatchRegions];
++std::atomic<int> ws_thread_tid[kWatchThreadSlots];
++std::atomic<uint32_t> ws_thread_count[kWatchThreadSlots];
++int WatchCurrentTid() {
++  thread_local int tid = int(rex::thread::current_thread_system_id());
++  return tid;
++}
++uint64_t Take(std::atomic<uint64_t>& a) { return a.exchange(0, std::memory_order_relaxed); }
++}  // namespace
++
++void WatchStatsNoteFault(uint32_t physical_address, uint64_t ns) {
++  ws_faults.fetch_add(1, std::memory_order_relaxed);
++  ws_fault_ns.fetch_add(ns, std::memory_order_relaxed);
++  ws_regions[(physical_address & 0x1FFFFFFFu) >> 16].fetch_add(1, std::memory_order_relaxed);
++  const int tid = WatchCurrentTid();
++  for (int i = 0; i < kWatchThreadSlots; ++i) {
++    int expected = ws_thread_tid[i].load(std::memory_order_relaxed);
++    if (expected == 0 && ws_thread_tid[i].compare_exchange_strong(expected, tid)) expected = tid;
++    if (expected == tid) {
++      ws_thread_count[i].fetch_add(1, std::memory_order_relaxed);
++      return;
++    }
++  }
++}
++
++void WatchStatsNoteUnprotect(uint64_t pages) {
++  ws_unprotect_calls.fetch_add(1, std::memory_order_relaxed);
++  ws_unprotect_pages.fetch_add(pages, std::memory_order_relaxed);
++}
++
++void WatchStatsNoteRearm(uint64_t protect_calls, uint64_t pages, uint64_t ns) {
++  ws_rearm_calls.fetch_add(1, std::memory_order_relaxed);
++  ws_rearm_protect_calls.fetch_add(protect_calls, std::memory_order_relaxed);
++  ws_rearm_pages.fetch_add(pages, std::memory_order_relaxed);
++  ws_rearm_ns.fetch_add(ns, std::memory_order_relaxed);
++}
++
++WatchStatsSnapshot TakeWatchStats() {
++  WatchStatsSnapshot s;
++  s.faults = Take(ws_faults);
++  s.fault_ns = Take(ws_fault_ns);
++  s.fault_unprotect_calls = Take(ws_unprotect_calls);
++  s.fault_unprotect_pages = Take(ws_unprotect_pages);
++  s.rearm_calls = Take(ws_rearm_calls);
++  s.rearm_protect_calls = Take(ws_rearm_protect_calls);
++  s.rearm_pages = Take(ws_rearm_pages);
++  s.rearm_ns = Take(ws_rearm_ns);
++  for (uint32_t i = 0; i < kWatchRegions; ++i) {
++    if (uint32_t n = ws_regions[i].exchange(0, std::memory_order_relaxed)) {
++      s.top_regions.emplace_back(i, n);
++    }
++  }
++  std::sort(s.top_regions.begin(), s.top_regions.end(),
++            [](const auto& a, const auto& b) { return a.second > b.second; });
++  for (int i = 0; i < kWatchThreadSlots; ++i) {
++    const int tid = ws_thread_tid[i].load(std::memory_order_relaxed);
++    if (!tid) break;
++    if (uint32_t n = ws_thread_count[i].exchange(0, std::memory_order_relaxed)) {
++      s.fault_threads.emplace_back(tid, n);
++    }
++  }
++  std::sort(s.fault_threads.begin(), s.fault_threads.end(),
++            [](const auto& a, const auto& b) { return a.second > b.second; });
++  return s;
++}
++}  // namespace rex::memory
++
+ REXCVAR_DEFINE_BOOL(protect_on_release, false, "Memory",
+                     "Protect released memory to prevent accesses");
+ 
+@@ -556,8 +633,17 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+   // Will be rounded to physical page boundaries internally, so just pass 1 as
+   // the length - guranteed not to cross page boundaries also.
+   auto physical_heap = static_cast<PhysicalHeap*>(heap);
++  const bool watch_stats = rex::memory::watch_stats_enabled.load(std::memory_order_relaxed);
++  const auto watch_start =
++      watch_stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+   if (physical_heap->TriggerCallbacks(std::move(global_lock_locked_once), virtual_address, 1,
+                                       is_write, false)) {
++    if (watch_stats) {
++      rex::memory::WatchStatsNoteFault(
++          virtual_address, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                        std::chrono::steady_clock::now() - watch_start)
++                                        .count()));
++    }
+     return true;
+   }
+ 
+@@ -2113,6 +2199,21 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+   uint8_t* protect_base = membase_ + heap_base_;
+   uint32_t protect_system_page_first = UINT32_MAX;
+   auto global_lock = global_critical_region_.Acquire();
++  // log_memory_watch: counted from here (lock held) to return.
++  struct RearmStats {
++    bool on = rex::memory::watch_stats_enabled.load(std::memory_order_relaxed);
++    std::chrono::steady_clock::time_point start =
++        on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
++    uint64_t calls = 0, pages = 0;
++    ~RearmStats() {
++      if (on) {
++        rex::memory::WatchStatsNoteRearm(
++            calls, pages, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                       std::chrono::steady_clock::now() - start)
++                                       .count()));
++      }
++    }
++  } rearm_stats;
+   for (uint32_t i = system_page_first; i <= system_page_last; ++i) {
+     // Check if need to enable callbacks for the page and raise its protection.
+     //
+@@ -2173,6 +2274,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+       if (protect_system_page_first != UINT32_MAX) {
+         rex::memory::Protect(protect_base + protect_system_page_first * system_page_size_,
+                              (i - protect_system_page_first) * system_page_size_, protect_access);
++        ++rearm_stats.calls;
++        rearm_stats.pages += i - protect_system_page_first;
+         protect_system_page_first = UINT32_MAX;
+       }
+     }
+@@ -2181,6 +2284,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+     rex::memory::Protect(protect_base + protect_system_page_first * system_page_size_,
+                          (system_page_last + 1 - protect_system_page_first) * system_page_size_,
+                          protect_access);
++    ++rearm_stats.calls;
++    rearm_stats.pages += system_page_last + 1 - protect_system_page_first;
+   }
+ }
+ 
+@@ -2315,6 +2420,9 @@ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> globa
+           rex::memory::Protect(protect_base + unprotect_system_page_first * system_page_size_,
+                                (i - unprotect_system_page_first) * system_page_size_,
+                                rex::memory::PageAccess::kReadWrite);
++          if (rex::memory::watch_stats_enabled.load(std::memory_order_relaxed)) {
++            rex::memory::WatchStatsNoteUnprotect(i - unprotect_system_page_first);
++          }
+           unprotect_system_page_first = UINT32_MAX;
+         }
+       }
+@@ -2323,6 +2431,9 @@ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> globa
+       rex::memory::Protect(protect_base + unprotect_system_page_first * system_page_size_,
+                            (system_page_last + 1 - unprotect_system_page_first) * system_page_size_,
+                            rex::memory::PageAccess::kReadWrite);
++      if (rex::memory::watch_stats_enabled.load(std::memory_order_relaxed)) {
++        rex::memory::WatchStatsNoteUnprotect(system_page_last + 1 - unprotect_system_page_first);
++      }
+     }
+   }
+ 
 diff --git a/src/ui/imgui_drawer.cpp b/src/ui/imgui_drawer.cpp
 index 82173c8..6d8468b 100644
 --- a/src/ui/imgui_drawer.cpp
@@ -2915,6 +3211,31 @@ index 8986eec..1250e4c 100644
    switch (result) {
      case PaintResult::kPresented:
        surface_paint_connection_was_optimal_at_successful_paint_ = true;
+diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
+index b1257b3..93a2c4f 100644
+--- a/src/ui/surface_android.cpp
++++ b/src/ui/surface_android.cpp
+@@ -18,6 +18,20 @@
+ namespace rex {
+ namespace ui {
+ 
++AndroidNativeWindowSurface::AndroidNativeWindowSurface(ANativeWindow* window,
++                                                       SDL_Window* sdl_window)
++    : window_(window), sdl_window_(sdl_window) {
++  if (window_) {
++    ANativeWindow_acquire(window_);
++  }
++}
++
++AndroidNativeWindowSurface::~AndroidNativeWindowSurface() {
++  if (window_) {
++    ANativeWindow_release(window_);
++  }
++}
++
+ bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
+   int w = 0, h = 0;
+   if (window_) {
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
 index 57549ab..9e9c95f 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
@@ -3019,3 +3340,56 @@ index 6557a56..9176895 100644
      present_result = dfn.vkQueuePresentKHR(queue_acquisition.queue(), &present_info);
    }
    if (present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR) {
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index dd80634..4761373 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -41,6 +41,10 @@
+ #include <rex/ui/surface_gnulinux.h>
+ #endif
+ 
++REXCVAR_DEFINE_BOOL(android_surface_refresh, true, "UI",
++                    "Android: drop the presentation surface when the app's window is destroyed "
++                    "(sent to the background) and create a new one when it comes back.");
++
+ namespace rex::ui {
+ 
+ namespace {
+@@ -464,6 +468,7 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+     auto* native_window = static_cast<ANativeWindow*>(
+         SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
+     if (native_window) {
++      android_surface_window_ = native_window;
+       return std::make_unique<AndroidNativeWindowSurface>(native_window, sdl_window_);
+     }
+   }
+@@ -503,13 +508,29 @@ void WindowSDL::RequestPaintImpl() {
+   SDL_PushEvent(&event);
+ }
+ 
++void WindowSDL::SyncAndroidSurface() {
++#if REX_PLATFORM_ANDROID
++  if (!REXCVAR_GET(android_surface_refresh) || !sdl_window_) return;
++  void* current = SDL_GetPointerProperty(SDL_GetWindowProperties(sdl_window_),
++                                         SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr);
++  if (current == android_surface_window_) return;
++  REXLOG_INFO("Android window {} -> {}: {} the presentation surface", android_surface_window_,
++              current, current ? "recreating" : "dropping");
++  // Recreating goes through CreateSurfaceImpl, which records the new window.
++  android_surface_window_ = nullptr;
++  OnSurfaceChanged(current != nullptr);
++#endif
++}
++
+ void WindowSDL::HandlePaintEvent() {
+   paint_pending_.store(false, std::memory_order_release);
++  SyncAndroidSurface();
+   OnPaint();
+ }
+ 
+ void WindowSDL::HandleWindowEvent(SDL_Event& event) {
+   WindowDestructionReceiver destruction_receiver(this);
++  SyncAndroidSurface();
+   switch (event.type) {
+     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+       OnActualSizeUpdate(uint32_t(event.window.data1), uint32_t(event.window.data2),

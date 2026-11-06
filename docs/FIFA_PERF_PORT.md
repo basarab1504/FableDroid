@@ -171,3 +171,21 @@ after start (same save; the exact spot is not known to be identical).
 - GPU timeline per frame (GPUTIME, one frame per 5 s): span 43–59 ms, render passes ~20 ms, the
   rest outside passes / between submissions; so the Xclipse GPU itself is not the limit.
 - Codegen register options (`*_as_local`) would not speed up this thread (host code).
+
+## r12: background-resume crash fix and write-watch statistics
+
+- **Crash on returning from the background** (runs 013 and 015): on resume, a window resize event
+  made the presenter create a new `VkSurfaceKHR` (`CreateAndroidSurfaceKHR` →
+  `RefBase::incStrong`) from the `ANativeWindow*` captured when the surface was first created.
+  SDL had already released that window in `onNativeSurfaceDestroyed`, so this was a
+  use-after-free; the guest-thread SIGSEGV logged right after is a write-watch fault that hit
+  the default handler once the first crash had reverted it. Fix (`android_surface_refresh`,
+  default on): `AndroidNativeWindowSurface` holds its own reference to the window, and
+  `WindowSDL` compares SDL's current window with the one the surface was made from on every
+  window and paint event, detaching (`OnSurfaceChanged(false)`) or recreating
+  (`OnSurfaceChanged(true)`) the presenter's surface when it differs. Not yet verified on the
+  device.
+- **`log_memory_watch`** (on with diagnostic logging): every 5 s a `Memory watch` line with guest
+  write faults on watched pages (count, handling time under the global lock, unprotect calls
+  and pages, per thread, top 64 KiB physical regions) and the GPU thread's rearming
+  (`EnableAccessCallbacks` calls, mprotect calls, pages, time with the lock held).
