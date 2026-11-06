@@ -319,3 +319,23 @@ through to the slow path, which skips such pages too. Guest FPS in gameplay 18.8
   page cache compare/store ~6%. The write-watch / lock overhead is no longer the main cost;
   the next question is which fence wait (frames-in-flight throttle in BeginSubmission with
   `vulkan_max_frames_in_flight = 2`, resolve readbacks, occlusion queries) blocks it.
+
+### Where the GPU thread waits (existing `GPUSTAT per-frame` line, run 024)
+
+No new build was needed: `CheckSubmissionFenceAndDeviceLoss` already counts blocking fence waits
+per call line. In gameplay: `waits=1.0 wait_ms=8.6–17.4` per frame, all at
+`command_processor.cpp:5843`, i.e. `BeginSubmission` waiting for frame N−2 to finish on the GPU
+(`vulkan_max_frames_in_flight = 2`, launcher *Triple buffering* off). No resolve-readback,
+occlusion-query or sampler-overflow waits.
+
+So the GPU itself is now behind. Per frame the same line shows ~140–180 render pass begins,
+3000–4000 draws, ~2 submissions. Render passes are ended for barriers (`SubmitBarriers` →
+`EndRenderPass`) mainly when entering another render-target-cache pass
+(`command_processor.cpp:3481`, ~80/frame), for EDRAM dump compute dispatches in
+`VulkanRenderTargetCache::DumpRenderTargets` (`render_target_cache.cpp:6351`, ~40/frame) and for
+texture-load compute dispatches (`texture_cache.cpp:2002`, ~14/frame). On a tile-based GPU each
+break stores and reloads the tiles. GPUTIME also shows 10–17 ms per frame of GPU idle between
+submissions.
+
+Next measurements without a new build: *Triple buffering* on vs off (3 vs 2 frames in flight:
+does the GPU idle gap close?) and 360p vs 480p (does FPS follow the GPU load?).
