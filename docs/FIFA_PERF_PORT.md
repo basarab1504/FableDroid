@@ -339,3 +339,23 @@ submissions.
 
 Next measurements without a new build: *Triple buffering* on vs off (3 vs 2 frames in flight:
 does the GPU idle gap close?) and 360p vs 480p (does FPS follow the GPU load?).
+
+### Triple buffering (runs 024 off / 025 on, r15-local2, 480p, Lock to 30 on, 025 warmer: 31.7 vs 26.5 °C)
+
+| | 024: 2 frames in flight | 025: 3 frames in flight |
+|---|---|---|
+| Guest FPS, gameplay 5 s averages | 18.9–24.3, mean 22.0 | 14.1–26.4, mean 22.1 |
+| Fence waits (all `BeginSubmission`) | 0.9–1.0 per frame, 2.6–17.4 ms | 0.2–1.0 per frame, 0.1–17.8 ms |
+| GPU frame span (GPUTIME) | 44.3 ms | 36.5 ms |
+| GPU idle inside the frame | 0.3–2 ms | 0.3–1.2 ms |
+
+A third frame in flight changes nothing: the GPU has no idle time to fill, so the game is
+GPU-bound at ~22 FPS on this phone. Per GPU frame (GPUTIME, both runs): ~8–10 ms in the main scene
+pass (`rp800x3280`, ~2500–2800 draws), ~6–8 ms in render-target ownership transfers (mostly depth,
+`xferD1040x2528`, single segments up to 10 ms), ~10–12 ms outside render passes (`out`: EDRAM dumps,
+texture loads, barriers), ~2 ms texture loads. So roughly half of the GPU frame is EDRAM emulation
+rather than the game's own rendering. Stencil export is available (no per-bit stencil transfer
+draws); fragment shader interlock (the transfer-free FSI path) is not.
+
+The background fix also took the "drop" path in 025 (`Android window … -> 0x0: dropping the
+presentation surface`) before the app was swiped away.
