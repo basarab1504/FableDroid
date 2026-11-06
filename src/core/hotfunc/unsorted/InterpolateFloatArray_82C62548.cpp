@@ -5,7 +5,9 @@
 // identical to the generated body, with the same register side effects. The
 // first line makes tools/make_hotfunc_overrides.py skip this file.
 #include "fable_2_pch.h"
-#include "fable_2_funcs.231.h"
+// Declared here instead of including a numbered fable_2_funcs.N.h: the numbering changes
+// whenever the codegen partitions the output differently.
+DECLARE_REX_FUNC(InterpolateFloatArray_82C62548);
 
 extern "C" void InterpolateFloatArray_82C62548(PPCContext& __restrict ctx, uint8_t* base) {
 	REX_FUNC_PROLOGUE();
