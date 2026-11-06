@@ -252,3 +252,27 @@ same settings; r13 with *Aggressive hot pages* off behaves the same), but 021 ra
 No measurable FPS change, as expected while the GPU command thread is the limit; the guest
 threads used somewhat less CPU despite the warmer phone, but one short run each on different
 thermal states is not enough to claim it.
+
+### Aggressive hot pages (r13-local2, runs 021 off / 022 on, back to back, warm phone)
+
+Averages per 5 s in gameplay (8 intervals each). 022 ran 2 min after 021 without cooling
+(thermal status 2–3 vs 1–3), so FPS is not comparable; the write-watch counters are.
+
+| | 021 off (8/100/64) | 022 on (3/250/255) |
+|---|---|---|
+| Hot pages at the end | 96 (still growing) | 300 (still growing) |
+| Guest write faults | 1511 | 1016 (−33%) |
+| Fault handling under the lock | 200 ms | 158 ms |
+| Rearm calls (per heap view) | 391k | 400k |
+| mprotect calls / pages | 9654 / 27k | 4109 / 14k (−57%) |
+| Rearm time under the lock | 466 ms | 324 ms (−30%) |
+| Global lock waits, all / GPU Commands | 763 / 382 ms | 559 / 307 ms |
+| Hot page comparisons | 19.7k | 35.4k |
+| GPU worker CPU per frame | 32.6 ms | 35.1 ms |
+| Guest FPS mean | 21.2 | 20.5 |
+
+- The toggle does what it should: fewer faults, half the mprotect calls, less time under the
+  global lock. The GPU thread's CPU per frame did not fall (more page comparisons), and FPS
+  did not change measurably.
+- The rearm call count (~400k per 5 s, 97–99% without any mprotect) is unchanged: every call
+  takes the global lock and walks the page flags only to find the pages already watched.
