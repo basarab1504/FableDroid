@@ -63,6 +63,7 @@ final class Settings {
     // Off by default: on an Exynos/Xclipse phone it made VdSwap wait out its 100 ms timeout
     // almost every frame (about 7 FPS instead of 20-30; see docs/FIFA_PERF_PORT.md).
     boolean lowLatency() { return prefs.getBoolean("low_latency", false); }
+    boolean lock30() { return prefs.getBoolean("lock_30_fps", false); }
     boolean fxaa() { return prefs.getBoolean("fxaa", true); }
     boolean fineFoliage() { return prefs.getBoolean("fine_foliage", true); }
     String driver() {
@@ -131,6 +132,8 @@ final class Settings {
         managed.put("vulkan_max_frames_in_flight", tripleBuffering() ? "3" : "2");
         managed.put("fable2_skip_intros", skipIntros() ? "true" : "false");
         managed.put("guest_max_frames_ahead", lowLatency() ? "1" : "0");
+        // Host-side swap pacing (SDK frame_limit); 0 = unlimited.
+        managed.put("frame_limit", lock30() ? "30" : "0");
         managed.put("swap_post_effect", fxaa() ? "\"fxaa\"" : "\"none\"");
         managed.put("spirv_alpha_to_coverage_1x_bayer", fineFoliage() ? "true" : "false");
         managed.put("vulkan_android_custom_driver", "\"" + driver() + "\"");

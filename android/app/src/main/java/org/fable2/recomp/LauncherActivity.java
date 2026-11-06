@@ -176,6 +176,9 @@ public final class LauncherActivity extends Activity {
         graphics.addView(Ui.row(this, "Low latency mode",
             "Stops the game queuing frames ahead of the GPU for less input lag. On some phones (measured on an Exynos/Xclipse one) it cuts the frame rate to a third; off by default.",
             Ui.toggle(this, settings.lowLatency(), on -> settings.put("low_latency", on))));
+        graphics.addView(Ui.row(this, "Lock to 30 FPS",
+            "Never lets the game run faster than 30 FPS: steadier pacing where it would go above 30, less work for the phone. Does not raise a lower frame rate.",
+            Ui.toggle(this, settings.lock30(), on -> settings.put("lock_30_fps", on))));
         column.addView(graphics);
 
         LinearLayout performance = Ui.card(this);

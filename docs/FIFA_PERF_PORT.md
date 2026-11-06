@@ -286,3 +286,20 @@ clears a bit concurrently also invalidates the page in the shared memory, so it 
 rearmed on its next use either way; the caller has just released the global lock, so bits cleared
 before the call are visible. `Memory watch` gains `skipped=` (calls returned by the fast path).
 r14-local2 = r13-local2 + this option.
+
+**r14 result (run 023, r14-local2, fast path + aggressive hot pages on, cool phone 22 °C, ~67 s;
+no run with the fast path off):** per 5 s in gameplay the fast path returned 116k–153k calls
+without the lock, but 240k–320k still took it while only 3k–8k made an mprotect call. The
+remaining calls are mostly for the other physical views (A0000000 / C0000000 / E0000000) of the
+same range, whose pages are not writable there, so their bit is never set and the check fell
+through to the slow path, which skips such pages too. Guest FPS in gameplay 18.8–22.9 (mean
+21.3), GPU worker 33.7 ms CPU per frame: no change yet.
+
+### r15: fast path also skips non-writable pages; *Lock to 30 FPS*
+
+- `memory_rearm_fast_path` now treats a page without the watch bit as "nothing to do" when its
+  guest protection in that view is no access or read-only (the slow path never protects those).
+  The page table entry is read without the lock; a protection change concurrently invalidates
+  the page through `TriggerCallbacks`, so it is rearmed on its next use.
+- Launcher *Lock to 30 FPS* (graphics card, default off) sets the SDK's `frame_limit = 30`
+  (host swap pacing with `sleep_until`; 0 = unlimited).
