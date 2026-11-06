@@ -132,3 +132,27 @@ guest atomics: GameThread @ SpinLock_Acquire ~712 ms, XThreads @ AddAtomic / Pro
   writer (generated `DestructRefCounted`) is no longer serialised by the lock.
 - Host code (`global_critical_region::Acquire`, interrupt dispatch, GPU access callbacks) is
   unaffected.
+
+### First device result (r11, SM-A566B, 480p, power saver on, 2026-11-06)
+
+Two short runs of the same build; only `guest_global_lock` differs. Gameplay window = 43–73 s
+after start (same save; the exact spot is not known to be identical).
+
+| | 012: lock on | 014: lock off |
+|---|---|---|
+| Battery temp at start | 31.8 °C | 23.4 °C |
+| Guest FPS, 5 s averages | 10.5, 22.7, 20.4, 15.3, 16.1, 19.1 (mean 17.4) | 18.2, 17.1, 19.5, 20.1, 26.7, 24.0, 23.5 (mean 21.3) |
+| Global lock waits, all threads | ~4.9 s per 5 s | 0.3–0.6 s per 5 s |
+| GameThread lock waits | ~1.05 s per 5 s | 6–9 ms per 5 s |
+| Thread CPU (threads ≥ 5%) | ~176% of a core | ~269% of a core |
+| GameThread / GPU Commands / 3D Engine CPU | 37% / 40% / 37% | 61% / 59% / 49% |
+
+- The lock waits are gone as expected. The remaining GPU Commands waits are in
+  `SharedMemory::RequestRanges` behind 3D Engine's `MMIOHandler::ExceptionCallback`.
+- CPU rose more than FPS. GameThread samples in 014 show no spinning in `SpinLock_Acquire`
+  (top entries: nanosleep 18%, game functions), but the samples are few.
+- Heat cannot be compared: different starting temperatures and only ~75 s of play.
+- No hang or crash during play. Run 013 (lock off) crashed 19 s in after the app went to the
+  background (`onPause`, then "Failed to get Vulkan surface capabilities"): the known
+  background-resume crash, not this option.
+- Not yet a measured speed-up: needs a longer pair of runs from a cold start.
