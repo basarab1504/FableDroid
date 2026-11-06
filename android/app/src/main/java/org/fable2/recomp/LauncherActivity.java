@@ -201,6 +201,9 @@ public final class LauncherActivity extends Activity {
         performance.addView(Ui.row(this, "Aggressive hot pages (experimental)",
             "Memory the game rewrites often stops being write-protected sooner and is compared on use instead, so fewer slow write traps. Turn off if graphics look stale or wrong.",
             Ui.toggle(this, settings.aggressiveHotPages(), on -> settings.put("aggressive_hot_pages", on))));
+        performance.addView(Ui.row(this, "Skip redundant write-watch rearms (experimental)",
+            "The GPU thread stops taking the global lock just to re-protect memory that is already protected. Turn off if the game hangs or graphics look stale.",
+            Ui.toggle(this, settings.rearmFastPath(), on -> settings.put("rearm_fast_path", on))));
         performance.addView(Ui.row(this, "Diagnostic logging",
             "Writes frame timing, late frames, thread CPU, temperature, GPU pass timing and resolve statistics to the log every 5 seconds, plus battery.log. Costs a little performance; leave off for normal play.",
             Ui.toggle(this, settings.diagnosticLogs(), on -> settings.put("diagnostic_logs", on))));

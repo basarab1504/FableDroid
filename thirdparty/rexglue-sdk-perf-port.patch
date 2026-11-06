@@ -514,10 +514,10 @@ index 0000000..df1b22d
 +}  // namespace rex::graphics
 diff --git a/include/rex/memory/watch_stats.h b/include/rex/memory/watch_stats.h
 new file mode 100644
-index 0000000..b8a53bb
+index 0000000..b962129
 --- /dev/null
 +++ b/include/rex/memory/watch_stats.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,42 @@
 +/**
 + * @modified    Android perf port, 2026 - write-watch statistics (log_memory_watch)
 + */
@@ -542,6 +542,8 @@ index 0000000..b8a53bb
 +  // EnableAccessCallbacks (GPU thread rearming watches): calls, mprotect calls and pages,
 +  // and the time from taking the global lock to returning.
 +  uint64_t rearm_calls = 0, rearm_protect_calls = 0, rearm_pages = 0, rearm_ns = 0;
++  // Calls that returned without the lock (memory_rearm_fast_path: all pages already watched).
++  uint64_t rearm_skipped = 0;
 +  // Fault count per 64 KiB physical region (region index, count), most first.
 +  std::vector<std::pair<uint32_t, uint32_t>> top_regions;
 +  // Fault count per host thread id, most first.
@@ -555,6 +557,7 @@ index 0000000..b8a53bb
 +void WatchStatsNoteFault(uint32_t physical_address, uint64_t ns);
 +void WatchStatsNoteUnprotect(uint64_t pages);
 +void WatchStatsNoteRearm(uint64_t protect_calls, uint64_t pages, uint64_t ns);
++void WatchStatsNoteRearmSkipped();
 +
 +}  // namespace rex::memory
 diff --git a/include/rex/thread/mutex.h b/include/rex/thread/mutex.h
@@ -1280,7 +1283,7 @@ index e2d3f99..1e2dd4e 100644
          if (!worker_running_) {
            // Short-circuited exit.
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 6d09240..ccb33e6 100644
+index 6d09240..68837d8 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
 @@ -24,6 +24,7 @@
@@ -1317,7 +1320,7 @@ index 6d09240..ccb33e6 100644
  REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
      .allowed({"none", "fxaa", "fxaa_extreme"})
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-@@ -45,8 +65,432 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
+@@ -45,8 +65,434 @@ REXCVAR_DEFINE_BOOL(guest_vblank_pacing, true, "GPU",
                      "Pace emulated vblank interrupts at the guest refresh rate when VSync is on")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
  
@@ -1536,7 +1539,7 @@ index 6d09240..ccb33e6 100644
 +// log_memory_watch: write-watch faults and rearming over the last interval.
 +void LogMemoryWatchStats() {
 +  const rex::memory::WatchStatsSnapshot s = rex::memory::TakeWatchStats();
-+  if (!s.faults && !s.rearm_calls) return;
++  if (!s.faults && !s.rearm_calls && !s.rearm_skipped) return;
 +  std::string threads;
 +  for (size_t i = 0; i < s.fault_threads.size() && i < 8; ++i) {
 +    threads += fmt::format(" {}={}", ProcThreadName(s.fault_threads[i].first),
@@ -1548,9 +1551,11 @@ index 6d09240..ccb33e6 100644
 +  }
 +  REXGPU_INFO(
 +      "Memory watch (5s): faults={} handling={:.0f}ms unprotect_calls={} unprotect_pages={} | "
-+      "rearm calls={} mprotect={} pages={} time={:.0f}ms | regions={} by thread:{} | top 64K:{}",
++      "rearm calls={} mprotect={} pages={} time={:.0f}ms skipped={} | regions={} by thread:{} | "
++      "top 64K:{}",
 +      s.faults, s.fault_ns / 1e6, s.fault_unprotect_calls, s.fault_unprotect_pages, s.rearm_calls,
-+      s.rearm_protect_calls, s.rearm_pages, s.rearm_ns / 1e6, s.top_regions.size(), threads,
++      s.rearm_protect_calls, s.rearm_pages, s.rearm_ns / 1e6, s.rearm_skipped,
++      s.top_regions.size(), threads,
 +      regions);
 +}
 +
@@ -1750,7 +1755,7 @@ index 6d09240..ccb33e6 100644
  rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
      const std::string& effect_name) {
    std::string lowered = effect_name;
-@@ -141,6 +585,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -141,6 +587,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
      REXGPU_ERROR("Unable to initialize command processor");
      return X_STATUS_UNSUCCESSFUL;
    }
@@ -2979,7 +2984,7 @@ index c10694c..4cb0cae 100644
      REXSYS_ERROR("Runtime::Setup failed: {}", reason);
      Shutdown();
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
-index 9308f35..db98838 100644
+index 9308f35..0365d83 100644
 --- a/src/system/xmemory.cpp
 +++ b/src/system/xmemory.cpp
 @@ -10,6 +10,7 @@
@@ -2998,7 +3003,7 @@ index 9308f35..db98838 100644
  #include <rex/math.h>
  #include <rex/stream.h>
  #include <rex/system/function_dispatcher.h>
-@@ -36,6 +38,81 @@
+@@ -36,6 +38,89 @@
  REXCVAR_DEFINE_BOOL(protect_zero, true, "Memory", "Protect the zero page from reads and writes")
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
  
@@ -3009,7 +3014,7 @@ index 9308f35..db98838 100644
 +constexpr int kWatchThreadSlots = 64;
 +std::atomic<uint64_t> ws_faults{0}, ws_fault_ns{0}, ws_unprotect_calls{0}, ws_unprotect_pages{0};
 +std::atomic<uint64_t> ws_rearm_calls{0}, ws_rearm_protect_calls{0}, ws_rearm_pages{0},
-+    ws_rearm_ns{0};
++    ws_rearm_ns{0}, ws_rearm_skipped{0};
 +std::atomic<uint32_t> ws_regions[kWatchRegions];
 +std::atomic<int> ws_thread_tid[kWatchThreadSlots];
 +std::atomic<uint32_t> ws_thread_count[kWatchThreadSlots];
@@ -3040,6 +3045,8 @@ index 9308f35..db98838 100644
 +  ws_unprotect_pages.fetch_add(pages, std::memory_order_relaxed);
 +}
 +
++void WatchStatsNoteRearmSkipped() { ws_rearm_skipped.fetch_add(1, std::memory_order_relaxed); }
++
 +void WatchStatsNoteRearm(uint64_t protect_calls, uint64_t pages, uint64_t ns) {
 +  ws_rearm_calls.fetch_add(1, std::memory_order_relaxed);
 +  ws_rearm_protect_calls.fetch_add(protect_calls, std::memory_order_relaxed);
@@ -3057,6 +3064,7 @@ index 9308f35..db98838 100644
 +  s.rearm_protect_calls = Take(ws_rearm_protect_calls);
 +  s.rearm_pages = Take(ws_rearm_pages);
 +  s.rearm_ns = Take(ws_rearm_ns);
++  s.rearm_skipped = Take(ws_rearm_skipped);
 +  for (uint32_t i = 0; i < kWatchRegions; ++i) {
 +    if (uint32_t n = ws_regions[i].exchange(0, std::memory_order_relaxed)) {
 +      s.top_regions.emplace_back(i, n);
@@ -3077,10 +3085,15 @@ index 9308f35..db98838 100644
 +}
 +}  // namespace rex::memory
 +
++REXCVAR_DEFINE_BOOL(memory_rearm_fast_path, false, "Memory",
++                    "Skip the global lock in EnableAccessCallbacks when every page of the range "
++                    "is already write-watched (the call would change nothing)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
  REXCVAR_DEFINE_BOOL(protect_on_release, false, "Memory",
                      "Protect released memory to prevent accesses");
  
-@@ -556,8 +633,17 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+@@ -556,8 +641,17 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
    // Will be rounded to physical page boundaries internally, so just pass 1 as
    // the length - guranteed not to cross page boundaries also.
    auto physical_heap = static_cast<PhysicalHeap*>(heap);
@@ -3098,9 +3111,41 @@ index 9308f35..db98838 100644
      return true;
    }
  
-@@ -2113,6 +2199,21 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+@@ -2112,7 +2206,53 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+                                                : rex::memory::PageAccess::kReadOnly;
    uint8_t* protect_base = membase_ + heap_base_;
    uint32_t protect_system_page_first = UINT32_MAX;
++
++  // memory_rearm_fast_path: protection is only ever raised below for pages whose
++  // notify_on_invalidation bit is clear, so if every bit of the range is set the call changes
++  // nothing and the global lock is not needed. A fault that clears a bit concurrently also
++  // invalidates the page in the shared memory, so it is uploaded and rearmed again on its next
++  // use either way. The caller (SharedMemory::MakeRangeValid) has just released the global
++  // lock, so bits cleared before that are visible here.
++  static const bool fast_path = REXCVAR_GET(memory_rearm_fast_path);
++  if (fast_path && enable_invalidation_notifications && !enable_data_providers) {
++    bool all_watched = true;
++    for (uint32_t block = system_page_first >> 6; block <= (system_page_last >> 6); ++block) {
++      uint64_t mask = UINT64_MAX;
++      if (block == (system_page_first >> 6)) mask &= UINT64_MAX << (system_page_first & 63);
++      if (block == (system_page_last >> 6) && (system_page_last & 63) != 63) {
++        mask &= (uint64_t(1) << ((system_page_last & 63) + 1)) - 1;
++      }
++      const uint64_t bits =
++          __atomic_load_n(&system_page_flags_[block].notify_on_invalidation, __ATOMIC_ACQUIRE);
++      if ((bits & mask) != mask) {
++        all_watched = false;
++        break;
++      }
++    }
++    if (all_watched) {
++      if (rex::memory::watch_stats_enabled.load(std::memory_order_relaxed)) {
++        rex::memory::WatchStatsNoteRearmSkipped();
++      }
++      return;
++    }
++  }
++
    auto global_lock = global_critical_region_.Acquire();
 +  // log_memory_watch: counted from here (lock held) to return.
 +  struct RearmStats {
@@ -3120,7 +3165,7 @@ index 9308f35..db98838 100644
    for (uint32_t i = system_page_first; i <= system_page_last; ++i) {
      // Check if need to enable callbacks for the page and raise its protection.
      //
-@@ -2173,6 +2274,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+@@ -2173,6 +2313,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
        if (protect_system_page_first != UINT32_MAX) {
          rex::memory::Protect(protect_base + protect_system_page_first * system_page_size_,
                               (i - protect_system_page_first) * system_page_size_, protect_access);
@@ -3129,7 +3174,7 @@ index 9308f35..db98838 100644
          protect_system_page_first = UINT32_MAX;
        }
      }
-@@ -2181,6 +2284,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+@@ -2181,6 +2323,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
      rex::memory::Protect(protect_base + protect_system_page_first * system_page_size_,
                           (system_page_last + 1 - protect_system_page_first) * system_page_size_,
                           protect_access);
@@ -3138,7 +3183,7 @@ index 9308f35..db98838 100644
    }
  }
  
-@@ -2315,6 +2420,9 @@ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> globa
+@@ -2315,6 +2459,9 @@ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> globa
            rex::memory::Protect(protect_base + unprotect_system_page_first * system_page_size_,
                                 (i - unprotect_system_page_first) * system_page_size_,
                                 rex::memory::PageAccess::kReadWrite);
@@ -3148,7 +3193,7 @@ index 9308f35..db98838 100644
            unprotect_system_page_first = UINT32_MAX;
          }
        }
-@@ -2323,6 +2431,9 @@ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> globa
+@@ -2323,6 +2470,9 @@ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> globa
        rex::memory::Protect(protect_base + unprotect_system_page_first * system_page_size_,
                             (system_page_last + 1 - unprotect_system_page_first) * system_page_size_,
                             rex::memory::PageAccess::kReadWrite);

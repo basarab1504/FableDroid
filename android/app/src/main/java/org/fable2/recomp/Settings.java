@@ -82,6 +82,7 @@ final class Settings {
     boolean resolveShortcut() { return prefs.getBoolean("resolve_shortcut", false); }
     boolean lockFreeAtomics() { return prefs.getBoolean("lock_free_atomics", false); }
     boolean aggressiveHotPages() { return prefs.getBoolean("aggressive_hot_pages", false); }
+    boolean rearmFastPath() { return prefs.getBoolean("rearm_fast_path", false); }
     boolean threadSamples() { return prefs.getBoolean("thread_samples", false); }
     boolean diagnosticLogs() { return prefs.getBoolean("diagnostic_logs", false); }
     int touchMode() { return prefs.getInt("touch_mode", TOUCH_AUTO); }
@@ -154,6 +155,7 @@ final class Settings {
         managed.put("shared_memory_hot_faults", hot ? "3" : "8");
         managed.put("shared_memory_hot_fault_gap_ms", hot ? "250" : "100");
         managed.put("shared_memory_hot_cool_matches", hot ? "255" : "64");
+        managed.put("memory_rearm_fast_path", rearmFastPath() ? "true" : "false");
 
         // Diagnostic logging: the FIFA port's log set plus this project's GPUSTAT/GPUTIME
         // (log_gpu_diagnostics needs log_guest_fps_seconds). All off in normal play.

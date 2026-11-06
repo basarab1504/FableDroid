@@ -276,3 +276,13 @@ Averages per 5 s in gameplay (8 intervals each). 022 ran 2 min after 021 without
   did not change measurably.
 - The rearm call count (~400k per 5 s, 97–99% without any mprotect) is unchanged: every call
   takes the global lock and walks the page flags only to find the pages already watched.
+
+### r14: lock-free rearm fast path (`memory_rearm_fast_path`, launcher: *Skip redundant write-watch rearms*)
+
+`PhysicalHeap::EnableAccessCallbacks` raises protection only for pages whose
+`notify_on_invalidation` bit is clear. With the cvar on (default off) it first checks those bits
+without the global lock and returns if every page of the range is already watched. A fault that
+clears a bit concurrently also invalidates the page in the shared memory, so it is reuploaded and
+rearmed on its next use either way; the caller has just released the global lock, so bits cleared
+before the call are visible. `Memory watch` gains `skipped=` (calls returned by the fast path).
+r14-local2 = r13-local2 + this option.
