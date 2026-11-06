@@ -212,3 +212,20 @@ Per 5 s in gameplay (from 17:53:30):
 `shared_memory_hot_faults` (8), `shared_memory_hot_fault_gap_ms` (100),
 `shared_memory_hot_cool_matches` (64) replace the constants; defaults unchanged. The launcher
 toggle (default off) sets 3 / 250 / 255.
+
+### r13-local: register options as in UnleashedRecomp (experiment, separate build)
+
+`fable2_codegen_local.toml` holds `ctr/xer/reserved/cr/non_argument/non_volatile_as_local = true`
+(not `skip_lr`: hotfuncs read `ctx.lr`; not `skip_msr`: covered by `guest_global_lock`). It is
+**not** included by default. To build the variant, add it to `[entrypoint] includes` in
+`fable_2_manifest.toml` and rerun the codegen; the r13-local APK was built that way in a
+separate worktree, so the default build is unchanged.
+
+- Effect on the code: guest registers become C++ locals (e.g. `fable_2_recomp.10.cpp`: 2178
+  `ctx.r30/r31` accesses → 0), and the `__savegprlr`/`__restgprlr` stack saves of nonvolatile
+  registers disappear from generated functions. Unstripped `libmain.so` 248 → 192 MB.
+- Checked: no hotfunc reads a caller's r14–r31 across the hotfunc/generated boundary (script
+  scan; three hits were internal helpers). Two hotfuncs included numbered `fable_2_funcs.N.h`
+  headers, which change with the partitioning; they now declare their callees.
+- Not checked yet: setjmp/longjmp (translated as `env = ctx; ppc_setjmp(); if (ret) ctx = env;`,
+  same as XenonRecomp) and midasm hooks at run time.

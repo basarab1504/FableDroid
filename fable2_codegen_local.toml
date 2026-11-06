@@ -1,0 +1,9 @@
+# Experiment (r13-local): the register options from the manifest's "Conservative settings"
+# block, which sits inside the last [[entrypoint.midasm_hook]] table and is therefore ignored.
+# skip_lr and skip_msr stay off (hotfuncs read ctx.lr; MSR is handled by guest_global_lock).
+ctr_as_local = true
+xer_as_local = true
+reserved_as_local = true
+cr_as_local = true
+non_argument_as_local = true
+non_volatile_as_local = true
