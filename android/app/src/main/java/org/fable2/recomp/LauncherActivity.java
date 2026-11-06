@@ -198,6 +198,9 @@ public final class LauncherActivity extends Activity {
         performance.addView(Ui.row(this, "Lock-free guest atomics (experimental)",
             "The game's atomic operations rely on the CPU's compare-and-swap alone instead of also queueing all threads on one global lock. Turn off if the game hangs or behaves oddly.",
             Ui.toggle(this, settings.lockFreeAtomics(), on -> settings.put("lock_free_atomics", on))));
+        performance.addView(Ui.row(this, "Aggressive hot pages (experimental)",
+            "Memory the game rewrites often stops being write-protected sooner and is compared on use instead, so fewer slow write traps. Turn off if graphics look stale or wrong.",
+            Ui.toggle(this, settings.aggressiveHotPages(), on -> settings.put("aggressive_hot_pages", on))));
         performance.addView(Ui.row(this, "Diagnostic logging",
             "Writes frame timing, late frames, thread CPU, temperature, GPU pass timing and resolve statistics to the log every 5 seconds, plus battery.log. Costs a little performance; leave off for normal play.",
             Ui.toggle(this, settings.diagnosticLogs(), on -> settings.put("diagnostic_logs", on))));

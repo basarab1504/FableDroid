@@ -189,3 +189,26 @@ after start (same save; the exact spot is not known to be identical).
   write faults on watched pages (count, handling time under the global lock, unprotect calls
   and pages, per thread, top 64 KiB physical regions) and the GPU thread's rearming
   (`EnableAccessCallbacks` calls, mprotect calls, pages, time with the lock held).
+
+### r12 result: write-watch activity (run 017, r12, lock off, power saver off, ~85 s)
+
+Per 5 s in gameplay (from 17:53:30):
+
+| | value |
+|---|---|
+| Guest write faults on watched pages | 1600–2400 (≈ 20 per frame), almost all on 3D Engine, some on Texture Streamer |
+| Fault handling (global lock held) | 185–342 ms |
+| GPU thread rearm calls (per heap view) | 360k–570k, of which mprotect 10k–17k |
+| Rearm time (global lock held) | 390–830 ms (8–16% of the GPU thread) |
+| Hot pages | 65–92; 20–34k comparisons, 16–20% changed |
+
+- The same 64 KiB regions fault in every interval (1C630000, 1FAB0000, 1C5A0000, …): the game keeps
+  rewriting them, but they rarely become hot. At ~20 FPS a frame is ~50 ms, so a page written
+  every second or third frame never reaches 8 faults in a row with ≤ 100 ms gaps.
+- Background-resume fix not exercised: the app was swiped away 2 s after going to the background.
+
+### r13: hot-page thresholds as cvars (launcher: *Aggressive hot pages*)
+
+`shared_memory_hot_faults` (8), `shared_memory_hot_fault_gap_ms` (100),
+`shared_memory_hot_cool_matches` (64) replace the constants; defaults unchanged. The launcher
+toggle (default off) sets 3 / 250 / 255.

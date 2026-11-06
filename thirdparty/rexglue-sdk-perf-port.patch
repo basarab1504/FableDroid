@@ -1762,7 +1762,7 @@ index 6d09240..ccb33e6 100644
  
    // Register GPU MMIO handlers
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
-index ac40c0c..0aa5a78 100644
+index ac40c0c..3efd760 100644
 --- a/src/graphics/shared_memory.cpp
 +++ b/src/graphics/shared_memory.cpp
 @@ -10,10 +10,12 @@
@@ -1778,7 +1778,7 @@ index ac40c0c..0aa5a78 100644
  #include <rex/bit.h>
  #include <rex/dbg.h>
  #include <rex/graphics/shared_memory.h>
-@@ -30,10 +32,105 @@ SharedMemory::~SharedMemory() {
+@@ -30,10 +32,126 @@ SharedMemory::~SharedMemory() {
    ShutdownCommon();
  }
  
@@ -1786,13 +1786,34 @@ index ac40c0c..0aa5a78 100644
 +                    "Stop write-watching pages the CPU rewrites every frame and compare them with "
 +                    "the last upload on every request instead (needs the CPU upload cache)");
 +
++// A page that takes shared_memory_hot_faults write-watch faults in a row, each within
++// shared_memory_hot_fault_gap_ms of the previous one, becomes hot; shared_memory_hot_cool_matches
++// equal comparisons in a row make it watched again. Defaults = the original constants (8, 100,
++// 64), tuned for about one fault per frame at 30+ FPS.
++REXCVAR_DEFINE_UINT32(shared_memory_hot_faults, 8, "GPU",
++                      "Write-watch faults in a row that make a page hot (unwatched, compared)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_UINT32(shared_memory_hot_fault_gap_ms, 100, "GPU",
++                      "Longest gap in ms between two faults that still counts as 'in a row'")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_UINT32(shared_memory_hot_cool_matches, 64, "GPU",
++                      "Unchanged comparisons in a row that make a hot page watched again (max 255)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
 +namespace {
-+// A page that takes kHotFaults write-watch faults in a row, each within kHotFaultGapMs of
-+// the previous one (about every frame), becomes hot; kCoolMatches equal comparisons in a row
-+// make it watched again.
-+constexpr uint8_t kHotFaults = 8;
-+constexpr uint32_t kHotFaultGapMs = 100;
-+constexpr uint8_t kCoolMatches = 64;
++uint8_t HotFaults() {
++  static const uint8_t v = uint8_t(std::clamp<uint32_t>(REXCVAR_GET(shared_memory_hot_faults), 1, 255));
++  return v;
++}
++uint32_t HotFaultGapMs() {
++  static const uint32_t v = REXCVAR_GET(shared_memory_hot_fault_gap_ms);
++  return v;
++}
++uint8_t CoolMatches() {
++  static const uint8_t v =
++      uint8_t(std::clamp<uint32_t>(REXCVAR_GET(shared_memory_hot_cool_matches), 1, 255));
++  return v;
++}
 +uint32_t HotClockMs() {
 +  return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
 +                      std::chrono::steady_clock::now().time_since_epoch())
@@ -1818,10 +1839,10 @@ index ac40c0c..0aa5a78 100644
 +  if (page >= page_fault_heat_.size()) return;
 +  const uint32_t now = HotClockMs();
 +  uint8_t& heat = page_fault_heat_[page];
-+  heat = (now - page_last_fault_ms_[page] <= kHotFaultGapMs) ? uint8_t(std::min(heat + 1, 255)) : 1;
++  heat = (now - page_last_fault_ms_[page] <= HotFaultGapMs()) ? uint8_t(std::min(heat + 1, 255)) : 1;
 +  page_last_fault_ms_[page] = now;
 +  const uint64_t bit = uint64_t(1) << (page & 63);
-+  if (heat < kHotFaults || (system_page_flags_hot_[page >> 6] & bit) ||
++  if (heat < HotFaults() || (system_page_flags_hot_[page >> 6] & bit) ||
 +      (system_page_flags_valid_and_gpu_written_[page >> 6] & bit) || PageHasRangeWatch(page)) {
 +    return;
 +  }
@@ -1860,7 +1881,7 @@ index ac40c0c..0aa5a78 100644
 +      page_hot_match_streak_[page] = 0;
 +      return;
 +    }
-+    if (++page_hot_match_streak_[page] < kCoolMatches) return;
++    if (++page_hot_match_streak_[page] < CoolMatches()) return;
 +  }
 +  CoolHotPages(page, page, true);
 +}
@@ -1884,7 +1905,7 @@ index ac40c0c..0aa5a78 100644
  
    memory_invalidation_callback_handle_ =
        memory_.RegisterPhysicalMemoryInvalidationCallback(MemoryInvalidationCallbackThunk, this);
-@@ -90,6 +187,7 @@ void SharedMemory::ShutdownCommon() {
+@@ -90,6 +208,7 @@ void SharedMemory::ShutdownCommon() {
  }
  
  void SharedMemory::InvalidateAllPages() {
@@ -1892,7 +1913,7 @@ index ac40c0c..0aa5a78 100644
    auto global_lock = global_critical_region_.Acquire();
  
    std::fill(system_page_flags_valid_.begin(), system_page_flags_valid_.end(), uint64_t(0));
-@@ -106,6 +204,7 @@ void SharedMemory::SetSystemPageBlocksValidWithGpuDataWritten() {
+@@ -106,6 +225,7 @@ void SharedMemory::SetSystemPageBlocksValidWithGpuDataWritten() {
  }
  
  void SharedMemory::ClearCache() {
@@ -1900,7 +1921,7 @@ index ac40c0c..0aa5a78 100644
    // Keeping GPU-written data, so "invalidated by GPU".
    FireWatches(0, (kBufferSize - 1) >> page_size_log2_, true);
    // No watches now, so no references to the pools accessible by guest threads -
-@@ -166,6 +265,7 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(uint32_t start, uint32_
+@@ -166,6 +286,7 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(uint32_t start, uint32_
    uint32_t bucket_first = watch_page_first << page_size_log2_ >> kWatchBucketSizeLog2;
    uint32_t bucket_last = watch_page_last << page_size_log2_ >> kWatchBucketSizeLog2;
  
@@ -1908,7 +1929,7 @@ index ac40c0c..0aa5a78 100644
    auto global_lock = global_critical_region_.Acquire();
  
    // Allocate the range.
-@@ -262,11 +362,13 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
+@@ -262,11 +383,13 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
    uint32_t end = start + length - 1;
    uint32_t page_first = start >> page_size_log2_;
    uint32_t page_last = end >> page_size_log2_;
@@ -1922,7 +1943,7 @@ index ac40c0c..0aa5a78 100644
    // Mark the range as valid (so pages are not reuploaded until modified by the
    // CPU) and watch it so the CPU can reuse it and this will be caught.
    MakeRangeValid(start, length, true);
-@@ -310,6 +412,22 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+@@ -310,6 +433,22 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
      }
    }
  
@@ -1945,7 +1966,7 @@ index ac40c0c..0aa5a78 100644
    if (memory_invalidation_callback_handle_) {
      memory().EnablePhysicalMemoryAccessCallbacks(
          valid_page_first << page_size_log2_,
-@@ -415,6 +533,9 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+@@ -415,6 +554,9 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
        uint32_t range_start = UINT32_MAX;
        for (uint32_t i = block_first; i <= block_last; ++i) {
          uint64_t block_valid = system_page_flags_valid_[i];
@@ -1955,7 +1976,7 @@ index ac40c0c..0aa5a78 100644
          // Consider pages in the block outside the requested range valid.
          if (i == block_first) {
            uint64_t block_before = (uint64_t(1) << (page_first & 63)) - 1;
-@@ -495,6 +616,9 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+@@ -495,6 +637,9 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
    uint32_t block_last = page_last >> 6;
  
    auto global_lock = global_critical_region_.Acquire();
