@@ -156,3 +156,18 @@ after start (same save; the exact spot is not known to be identical).
   background (`onPause`, then "Failed to get Vulkan surface capabilities"): the known
   background-resume crash, not this option.
 - Not yet a measured speed-up: needs a longer pair of runs from a cold start.
+
+### Power saver off (r11, lock off, run 016, battery 16 °C, ~60 s)
+
+- Guest FPS in gameplay 16–21, not higher than with power saver on (014). Thread CPU fell to
+  ~200% of a core, so clocks were higher but the frame rate did not follow.
+- The limit is the GPU command thread: `Worker actual CPU` 29.8 ms thread CPU per frame, only 8%
+  of the interval idle waiting for the guest, plus ~0.9 s per 5 s waiting for the global lock
+  (≈ 40 ms per frame in total, i.e. a ~17–18 FPS ceiling; `GUESTFPS fps=17.5`).
+- GPU thread samples: `mprotect` from `PhysicalHeap::EnableAccessCallbacks` 12.5%, futex waits for
+  the global lock in `SharedMemory::RequestRanges` ~11% (holders: 3D Engine in
+  `MMIOHandler::ExceptionCallback` / `SharedMemory::FireWatches`, Audio Worker, VSync interrupt),
+  upload page cache compare/copy ~5%.
+- GPU timeline per frame (GPUTIME, one frame per 5 s): span 43–59 ms, render passes ~20 ms, the
+  rest outside passes / between submissions; so the Xclipse GPU itself is not the limit.
+- Codegen register options (`*_as_local`) would not speed up this thread (host code).
