@@ -303,3 +303,19 @@ through to the slow path, which skips such pages too. Guest FPS in gameplay 18.8
   the page through `TriggerCallbacks`, so it is rearmed on its next use.
 - Launcher *Lock to 30 FPS* (graphics card, default off) sets the SDK's `frame_limit = 30`
   (host swap pacing with `sleep_until`; 0 = unlimited).
+
+**r15 result (run 024, r15-local2, fast path + aggressive hot pages + Lock to 30 FPS on, 27 °C,
+~93 s):**
+- **Background-resume fix works:** the app went to the background 11 s in (`onPause`,
+  `surfaceDestroyed`), came back 1 s later, `Android window … recreating the presentation
+  surface` was logged and the game ran on for 80 s.
+- Fast path now returns 290k–517k rearm calls per 5 s without the lock; the calls that still
+  take it are exactly the ones that call mprotect (~4.9k). Rearm time under the lock 260 ms
+  (466 ms in 021, 324 ms in 022), GPU Commands lock waits 264 ms per 5 s.
+- Guest FPS in gameplay mean 22.0 (21.3 in 023), GPU worker 31.8 ms CPU per frame: still no
+  clear change.
+- GPU thread samples now: 15% in `drmSyncobjWait` (the driver waiting for a GPU fence, i.e.
+  the GPU thread blocked on the GPU), syscall 7% (lock / condition waits), mprotect 4%, upload
+  page cache compare/store ~6%. The write-watch / lock overhead is no longer the main cost;
+  the next question is which fence wait (frames-in-flight throttle in BeginSubmission with
+  `vulkan_max_frames_in_flight = 2`, resolve readbacks, occlusion queries) blocks it.
